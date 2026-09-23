@@ -3,6 +3,10 @@ import type { FastifyInstance } from "fastify";
 import fp from "fastify-plugin";
 import type { Collection, Document, ObjectId } from "mongodb";
 import packageJson from "../../package.json" with { type: "json" };
+import {
+  type AcademicCollections,
+  initializeAcademicCollections,
+} from "./academic-collections.js";
 
 export type EventDocument = {
   ownerUsername: string;
@@ -281,10 +285,12 @@ async function initializeCollections(fastify: FastifyInstance): Promise<void> {
     { name: "idempotency_expires_at", expireAfterSeconds: 0 },
   );
 
+  const academic = await initializeAcademicCollections(db);
   fastify.decorate("collections", {
     example,
     events,
     idempotencyRecords,
+    ...academic,
   });
 }
 
@@ -312,7 +318,7 @@ export default fp<InitMongoPluginOptions>(async (fastify, opts) => {
 
 declare module "fastify" {
   export interface FastifyInstance {
-    collections: {
+    collections: AcademicCollections & {
       example: Collection<Document>;
       events: Collection<EventDocument>;
       idempotencyRecords: Collection<IdempotencyRecordDocument>;

@@ -63,6 +63,9 @@ describe("timetable collection bootstrap", () => {
       expect(first.collections.idempotencyRecords.collectionName).toBe(
         "idempotencyRecords",
       );
+      expect(first.collections.academicTerms.collectionName).toBe(
+        "academicTerms",
+      );
     } finally {
       await first.close();
     }
@@ -73,6 +76,9 @@ describe("timetable collection bootstrap", () => {
         .listIndexes()
         .toArray();
       const recordIndexes = await second.collections.idempotencyRecords
+        .listIndexes()
+        .toArray();
+      const academicIndexes = await second.collections.academicTerms
         .listIndexes()
         .toArray();
 
@@ -129,6 +135,15 @@ describe("timetable collection bootstrap", () => {
         recordIndexes.find((index) => index.name === "idempotency_expires_at")
           ?.expireAfterSeconds,
       ).toBe(0);
+      expect(
+        academicIndexes.find((index) => index.name === "academic_term_identity")
+          ?.unique,
+      ).toBe(true);
+      expect(
+        (await second.collections.classSections.listIndexes().toArray()).find(
+          (index) => index.name === "sections_batch_identity",
+        )?.unique,
+      ).toBe(true);
     } finally {
       await second.close();
     }

@@ -20,6 +20,13 @@ docker compose up --build -d
 curl http://localhost:3000/health
 ```
 
+## Academic data tool
+
+`tools/course-data` is a separate operator package for fetching, validating,
+and loading HKUST Class Schedule data. It uses its own dependencies and MongoDB
+client; the API never starts a full-term crawl on a user request. See its
+[README](tools/course-data/README.md) for commands and source limitations.
+
 ## Environment
 
 Copy `.env.example` to `.env` for local configuration. `CURSOR_SIGNING_KEY` is
