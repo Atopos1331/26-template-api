@@ -608,6 +608,39 @@ test("fresh quota stays cached; concurrent stale reads enqueue one durable job",
   }
 });
 
+test("refresh worker drains pending projections alongside a refresh backlog", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    const clock = new Date("2026-09-23T10:20:00.000Z");
+    await saveQuotaObservation(db, termCode, observation(timestamp), 300);
+    await enqueueQuotaRefreshJob(
+      db,
+      ACADEMIC_SOURCE,
+      termCode,
+      sectionId,
+      clock,
+    );
+    const source = new FixtureQuotaSource(
+      new Map([[sectionId, observation(clock.toISOString(), 12)]]),
+    );
+    expect(await worker(db, source, () => clock).runOne()).toBe(true);
+    expect(source.calls).toHaveLength(1);
+    expect(
+      await db.collection("quotaSnapshots").countDocuments({
+        projectionStatus: "done",
+      }),
+    ).toBe(1);
+    expect(
+      (await db.collection("refreshJobs").findOne({ targetId: sectionId }))
+        ?.status,
+    ).toBe("succeeded");
+  } finally {
+    await app.close();
+  }
+});
+
 test("watched-section scan expands courses, skips retired sections, and coalesces jobs", async () => {
   const app = await buildApp();
   try {

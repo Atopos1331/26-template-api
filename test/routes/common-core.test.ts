@@ -5,6 +5,7 @@ import fp from "fastify-plugin";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import App from "../../src/app.js";
 import { ACADEMIC_SOURCE } from "../../src/domain/academic.js";
+import { CommonCoreRepository } from "../../src/repositories/common-core.js";
 
 const alice = { authorization: "Bearer alice-dev-token" };
 let mongod: MongoMemoryServer;
@@ -50,6 +51,49 @@ test("Common Core presets resolve term errors before catalog availability", asyn
     });
     expect(unavailable.statusCode).toBe(503);
     expect(unavailable.json().error.code).toBe("term_not_selectable");
+  } finally {
+    await app.close();
+  }
+});
+
+test("Common Core activation is idempotent under concurrent imports", async () => {
+  const app = await buildApp();
+  try {
+    const repository = new CommonCoreRepository(app.mongo.db!);
+    const input = {
+      sourceUrl: "https://example.edu/common-core.json",
+      sourceTitle: "Common Core",
+      sourceContentHash: "a".repeat(64),
+      verifiedAt: "2026-09-23T00:00:00.000Z",
+      verifier: "operator",
+      evidence: "registrar source",
+      schemes: [
+        {
+          schemeId: "2026",
+          admissionYearFrom: 2026,
+          admissionYearTo: 2029,
+          categories: [
+            {
+              categoryId: "A",
+              label: "Arts",
+              courseCodes: ["HUMA1001"],
+            },
+          ],
+        },
+      ],
+    };
+    const now = new Date("2026-09-24T00:00:00.000Z");
+    const results = await Promise.all([
+      repository.activate(input, now),
+      repository.activate(input, now),
+    ]);
+    expect(results).toHaveLength(2);
+    expect(
+      await app.mongo.db!.collection("commonCoreCatalogs").countDocuments(),
+    ).toBe(1);
+    expect(
+      await app.mongo.db!.collection("commonCoreCatalogState").countDocuments(),
+    ).toBe(1);
   } finally {
     await app.close();
   }

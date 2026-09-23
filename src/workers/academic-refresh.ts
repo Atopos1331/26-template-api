@@ -364,6 +364,7 @@ export class AcademicRefreshWorker {
           },
         );
       if (leaseHeld) await leases.deleteOne({ leaseKey, ownerId: owner });
+      await this.projectOne();
     }
     return true;
   }

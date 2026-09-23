@@ -7,6 +7,26 @@ import {
 } from "../domain/common-core.js";
 import { PlanError } from "../domain/plans.js";
 
+function catalogContent(value: CommonCoreCatalog) {
+  return {
+    sourceUrl: value.sourceUrl,
+    sourceTitle: value.sourceTitle,
+    sourcePublishedAt: value.sourcePublishedAt ?? null,
+    sourceContentHash: value.sourceContentHash,
+    verifiedAt: value.verifiedAt,
+    verifier: value.verifier,
+    evidence: value.evidence,
+    schemes: value.schemes,
+  };
+}
+
+function sameCatalogContent(left: CommonCoreCatalog, right: CommonCoreCatalog) {
+  return (
+    JSON.stringify(catalogContent(left)) ===
+    JSON.stringify(catalogContent(right))
+  );
+}
+
 export class CommonCoreRepository {
   constructor(private readonly db: Db) {}
 
@@ -41,35 +61,34 @@ export class CommonCoreRepository {
     const existing = await catalogs.findOne({
       catalogVersion: catalog.catalogVersion,
     });
-    if (
-      existing &&
-      JSON.stringify({
-        sourceUrl: existing.sourceUrl,
-        sourceTitle: existing.sourceTitle,
-        sourcePublishedAt: existing.sourcePublishedAt ?? null,
-        sourceContentHash: existing.sourceContentHash,
-        verifiedAt: existing.verifiedAt,
-        verifier: existing.verifier,
-        evidence: existing.evidence,
-        schemes: existing.schemes,
-      }) !==
-        JSON.stringify({
-          sourceUrl: catalog.sourceUrl,
-          sourceTitle: catalog.sourceTitle,
-          sourcePublishedAt: catalog.sourcePublishedAt ?? null,
-          sourceContentHash: catalog.sourceContentHash,
-          verifiedAt: catalog.verifiedAt,
-          verifier: catalog.verifier,
-          evidence: catalog.evidence,
-          schemes: catalog.schemes,
-        })
-    )
+    if (existing && !sameCatalogContent(existing, catalog))
       throw new PlanError(
         "invalid_request",
         400,
         "Catalog version is already used by different content",
       );
-    if (!existing) await catalogs.insertOne(catalog);
+    if (!existing) {
+      try {
+        await catalogs.insertOne(catalog);
+      } catch (error) {
+        const duplicate =
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === 11000;
+        if (!duplicate) throw error;
+        const raced = await catalogs.findOne({
+          catalogVersion: catalog.catalogVersion,
+        });
+        if (!raced) throw error;
+        if (!sameCatalogContent(raced, catalog))
+          throw new PlanError(
+            "invalid_request",
+            400,
+            "Catalog version is already used by different content",
+          );
+      }
+    }
     const state = this.db.collection("commonCoreCatalogState");
     for (let attempt = 0; attempt < 3; attempt++) {
       const current = await state.findOne({ stateId: "common-core" });
