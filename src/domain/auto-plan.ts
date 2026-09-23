@@ -2,7 +2,30 @@ import { createHash } from "node:crypto";
 import { Temporal } from "@js-temporal/polyfill";
 import { PlanError } from "./plans.js";
 
-export type AutoPlanMode = "coverage_first" | "seat_safety" | "balanced";
+export type AutoPlanMode =
+  | "coverage_first"
+  | "seat_safety"
+  | "balanced"
+  | "custom";
+export type AutoPlanWeights = {
+  coverage: number;
+  seatSafety: number;
+  timeFit: number;
+  compactness: number;
+  instructorFit: number;
+};
+export type AutoPlanFill = {
+  maxCourses: number;
+  academicCareer?: string;
+  courseCodes: string[];
+  subjects: string[];
+  levels: number[];
+  minCredits?: number;
+  maxCredits?: number;
+  targetCredits?: number;
+  commonCoreCategoryIds?: string[];
+  commonCoreAdmissionYear?: number;
+};
 export type Weekday = "MO" | "TU" | "WE" | "TH" | "FR" | "SA" | "SU";
 
 export type AutoPlanWindow = {
@@ -52,6 +75,8 @@ export type NormalizedAutoPlanRequest = {
   includeCurrentSelected: boolean;
   constraints: AutoPlanConstraints;
   mode: AutoPlanMode;
+  weights?: AutoPlanWeights;
+  fill?: AutoPlanFill;
   allowFullWaitlist: boolean;
   unknownQuotaPolicy: "allow" | "exclude";
   resultLimit: number;
@@ -324,18 +349,182 @@ export function normalizeAutoPlanRequest(
   const body = object(input, "body");
   for (const key of Object.keys(body))
     if (!ROOT_FIELDS.has(key)) invalid(key, "is not allowed");
-  if (body.weights !== undefined)
-    invalid("weights", "custom weights are deferred to Phase 08");
-  if (body.fill !== undefined)
-    invalid("fill", "gap filling is deferred to Phase 08");
   const mode = body.mode ?? "coverage_first";
-  if (mode === "custom") invalid("mode", "custom mode is deferred to Phase 08");
   if (
     mode !== "coverage_first" &&
     mode !== "seat_safety" &&
-    mode !== "balanced"
+    mode !== "balanced" &&
+    mode !== "custom"
   )
-    invalid("mode", "must be coverage_first, seat_safety, or balanced");
+    invalid("mode", "must be coverage_first, seat_safety, balanced, or custom");
+  let weights: AutoPlanWeights | undefined;
+  if (body.weights !== undefined) {
+    const row = object(body.weights, "weights");
+    for (const key of Object.keys(row))
+      if (
+        ![
+          "coverage",
+          "seatSafety",
+          "timeFit",
+          "compactness",
+          "instructorFit",
+        ].includes(key)
+      )
+        invalid(`weights.${key}`, "is not allowed");
+    const fields = [
+      "coverage",
+      "seatSafety",
+      "timeFit",
+      "compactness",
+      "instructorFit",
+    ] as const;
+    const values = Object.fromEntries(
+      fields.map((field) => [
+        field,
+        finiteNumber(row[field], `weights.${field}`, 0, 100),
+      ]),
+    ) as AutoPlanWeights;
+    if (fields.some((field) => !Number.isInteger(values[field])))
+      invalid("weights", "all weights must be integers");
+    if (Object.values(values).reduce((sum, value) => sum + value, 0) !== 100)
+      invalid("weights", "weights must sum to 100");
+    if (values.coverage < 10)
+      invalid("weights.coverage", "must be at least 10");
+    weights = values;
+  }
+  if (mode === "custom" && !weights)
+    invalid("weights", "is required for custom mode");
+  if (mode !== "custom" && weights)
+    invalid("weights", "is only valid for custom mode");
+  let fill: AutoPlanFill | undefined;
+  if (body.fill !== undefined) {
+    const row = object(body.fill, "fill");
+    for (const key of Object.keys(row))
+      if (
+        ![
+          "maxCourses",
+          "academicCareer",
+          "courseCodes",
+          "subjects",
+          "levels",
+          "minCredits",
+          "maxCredits",
+          "targetCredits",
+          "commonCoreCategoryIds",
+          "commonCoreAdmissionYear",
+        ].includes(key)
+      )
+        invalid(`fill.${key}`, "is not allowed");
+    const maxCourses =
+      row.maxCourses === undefined
+        ? 0
+        : finiteNumber(row.maxCourses, "fill.maxCourses", 0, 12);
+    if (!Number.isInteger(maxCourses))
+      invalid("fill.maxCourses", "must be an integer from 0 to 12");
+    const courseCodes =
+      row.courseCodes === undefined
+        ? []
+        : uniqueStrings(
+            list(row.courseCodes, "fill.courseCodes", 40),
+            "fill.courseCodes",
+            32,
+          ).map((value) => normalizeCourseCode(value, "fill.courseCodes"));
+    const subjects =
+      row.subjects === undefined
+        ? []
+        : uniqueStrings(
+            list(row.subjects, "fill.subjects", 40),
+            "fill.subjects",
+            8,
+          ).map((value) => value.toUpperCase());
+    for (const subject of subjects)
+      if (!/^[A-Z]{2,8}$/.test(subject))
+        invalid("fill.subjects", "must contain subject codes");
+    const levels =
+      row.levels === undefined
+        ? []
+        : list(row.levels, "fill.levels", 9).map((value, index) =>
+            finiteNumber(value, `fill.levels[${index}]`, 1, 9),
+          );
+    if (
+      levels.some((value) => !Number.isInteger(value)) ||
+      new Set(levels).size !== levels.length
+    )
+      invalid("fill.levels", "must contain unique integer levels from 1 to 9");
+    const minCredits =
+      row.minCredits === undefined
+        ? undefined
+        : finiteNumber(row.minCredits, "fill.minCredits", 0, 60);
+    const maxCredits =
+      row.maxCredits === undefined
+        ? undefined
+        : finiteNumber(row.maxCredits, "fill.maxCredits", 0, 60);
+    const targetCredits =
+      row.targetCredits === undefined
+        ? undefined
+        : finiteNumber(row.targetCredits, "fill.targetCredits", 0, 60);
+    if (
+      minCredits !== undefined &&
+      maxCredits !== undefined &&
+      minCredits > maxCredits
+    )
+      invalid("fill", "minCredits must not exceed maxCredits");
+    const academicCareer =
+      row.academicCareer === undefined
+        ? undefined
+        : text(row.academicCareer, "fill.academicCareer", 32).toUpperCase();
+    const commonCoreCategoryIds =
+      row.commonCoreCategoryIds === undefined
+        ? []
+        : uniqueStrings(
+            list(row.commonCoreCategoryIds, "fill.commonCoreCategoryIds", 20),
+            "fill.commonCoreCategoryIds",
+            100,
+          );
+    const commonCoreAdmissionYear =
+      row.commonCoreAdmissionYear === undefined
+        ? undefined
+        : finiteNumber(
+            row.commonCoreAdmissionYear,
+            "fill.commonCoreAdmissionYear",
+            1900,
+            3000,
+          );
+    if (
+      commonCoreAdmissionYear !== undefined &&
+      !Number.isInteger(commonCoreAdmissionYear)
+    )
+      invalid("fill.commonCoreAdmissionYear", "must be an integer");
+    if (
+      maxCourses > 0 &&
+      !courseCodes.length &&
+      !subjects.length &&
+      !commonCoreCategoryIds.length
+    )
+      invalid(
+        "fill",
+        "must provide a bounded course, subject, or Common Core seed",
+      );
+    if (commonCoreAdmissionYear !== undefined && !commonCoreCategoryIds.length)
+      invalid(
+        "fill.commonCoreCategoryIds",
+        "is required with commonCoreAdmissionYear",
+      );
+    fill = {
+      maxCourses,
+      ...(academicCareer === undefined ? {} : { academicCareer }),
+      courseCodes,
+      subjects,
+      levels,
+      ...(minCredits === undefined ? {} : { minCredits }),
+      ...(maxCredits === undefined ? {} : { maxCredits }),
+      ...(targetCredits === undefined ? {} : { targetCredits }),
+      commonCoreCategoryIds,
+      ...(commonCoreAdmissionYear === undefined
+        ? {}
+        : { commonCoreAdmissionYear }),
+    };
+  }
   const courseRows = list(body.courses ?? [], "courses", 20).map(
     (entry, index) => {
       const row = object(entry, `courses[${index}]`);
@@ -504,6 +693,8 @@ export function normalizeAutoPlanRequest(
         : (body.includeCurrentSelected as boolean),
     constraints: constraints(body.constraints),
     mode,
+    ...(weights === undefined ? {} : { weights }),
+    ...(fill === undefined ? {} : { fill }),
     allowFullWaitlist:
       body.allowFullWaitlist === undefined
         ? false
@@ -525,7 +716,7 @@ export function normalizeAutoPlanRequest(
   )
     invalid("unknownQuotaPolicy", "must be allow or exclude");
   const bytes = Buffer.byteLength(JSON.stringify(request));
-  if (bytes > 64_000) invalid("body", "normalized request is too large");
+  if (bytes > 32_768) invalid("body", "normalized request is too large");
   return request;
 }
 

@@ -73,6 +73,7 @@ const app: FastifyPluginAsync<AppOptions> = async (
           name: "Academic",
           description: "Academic terms, courses, sections and quota",
         },
+        { name: "Watching", description: "Quota watches and notifications" },
       ],
       components: {
         securitySchemes: {

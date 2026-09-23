@@ -205,10 +205,12 @@ export type AppOptions = {
   academicCurrentTermCode?: string;
   academicQuotaTtlSeconds?: number;
   academicQuotaMinIntervalSeconds?: number;
+  academicQuotaMaxJobsPerPoll?: number;
   refreshFailureCooldownSeconds?: number;
   refreshMaxAttempts?: number;
   refreshLeaseSeconds?: number;
   academicProviderBaseUrl?: string;
+  commonCoreMaxAgeDays?: number;
 } & FastifyServerOptions &
   Partial<AutoloadPluginOptions> &
   InitMongoPluginOptions &
@@ -329,6 +331,11 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
       "ACADEMIC_QUOTA_MIN_INTERVAL_SECONDS",
       300,
     ),
+    academicQuotaMaxJobsPerPoll: positiveInteger(
+      env,
+      "ACADEMIC_QUOTA_MAX_JOBS_PER_POLL",
+      100,
+    ),
     refreshFailureCooldownSeconds: positiveInteger(
       env,
       "REFRESH_FAILURE_COOLDOWN_SECONDS",
@@ -339,6 +346,7 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
     academicProviderBaseUrl:
       env.ACADEMIC_PROVIDER_BASE_URL?.trim() ||
       "https://w5.ab.ust.hk/wcq/cgi-bin",
+    commonCoreMaxAgeDays: positiveInteger(env, "COMMON_CORE_MAX_AGE_DAYS", 365),
   };
 
   return options;

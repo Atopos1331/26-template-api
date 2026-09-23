@@ -121,6 +121,10 @@ export class UstQuotaSource implements QuotaSource {
   private lastRequestAt = 0;
   constructor(private readonly options: UstQuotaOptions = {}) {}
 
+  private nowMs() {
+    return (this.options.now?.() ?? new Date()).getTime();
+  }
+
   async fetchQuota(target: QuotaTarget): Promise<QuotaObservation> {
     if (
       !/^\d{2}(10|20|30|40)$/.test(target.termCode) ||
@@ -137,13 +141,14 @@ export class UstQuotaSource implements QuotaSource {
     const fetchImpl = this.options.fetchImpl ?? fetch;
     const retries = this.options.retries ?? 2;
     for (let attempt = 0; attempt <= retries; attempt++) {
+      const requestStartedAt = this.nowMs();
       const delay =
         (this.options.minIntervalMs ?? 1000) -
-        (Date.now() - this.lastRequestAt);
+        (requestStartedAt - this.lastRequestAt);
       if (delay > 0) await sleep(delay);
-      this.lastRequestAt = Date.now();
+      this.lastRequestAt = this.nowMs();
       try {
-        const observedAt = (this.options.now?.() ?? new Date()).toISOString();
+        const observedAt = new Date(this.nowMs()).toISOString();
         const response = await fetchImpl(url, {
           signal: AbortSignal.timeout(this.options.timeoutMs ?? 10000),
           headers: { "User-Agent": "USThing-academic-refresh/1.0" },

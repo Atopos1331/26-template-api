@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { Db, Document } from "mongodb";
 import { ACADEMIC_SOURCE } from "../domain/academic.js";
+import { effectiveRemaining } from "../domain/quota.js";
 import {
   QuotaProviderError,
   type QuotaSource,
   type QuotaTarget,
 } from "../providers/ust-quota.js";
 import {
+  enqueueQuotaRefreshJob,
   recordQuotaFailure,
   saveQuotaObservation,
 } from "../repositories/quotas.js";
@@ -16,6 +18,9 @@ export type WorkerSettings = {
   leaseSeconds: number;
   failureCooldownSeconds: number;
   quotaMinIntervalSeconds: number;
+  quotaTtlSeconds?: number;
+  maxWatchedJobsPerPoll?: number;
+  projectionLeaseSeconds?: number;
   now?: () => Date;
 };
 
@@ -26,6 +31,41 @@ function jobFilter(job: Document, owner: string) {
     claimOwner: owner,
     status: "running",
   };
+}
+
+function quotaState(row: Document | null) {
+  const remaining = effectiveRemaining(row ?? {});
+  return {
+    open: typeof row?.open === "boolean" ? row.open : null,
+    remaining: remaining === null ? null : Math.max(0, remaining),
+    waitlisted:
+      typeof row?.waitlisted === "number" && Number.isFinite(row.waitlisted)
+        ? Math.max(0, row.waitlisted)
+        : null,
+  };
+}
+
+function quotaChange(
+  previous: Document | null,
+  current: Document,
+): "opened" | "closed" | "seats_available" | null {
+  const oldOpen = typeof previous?.open === "boolean" ? previous.open : null;
+  const newOpen = typeof current.open === "boolean" ? current.open : null;
+  if (oldOpen !== null && newOpen !== null && oldOpen !== newOpen)
+    return newOpen ? "opened" : "closed";
+  const oldRemaining = effectiveRemaining(previous ?? {});
+  const newRemaining = effectiveRemaining(current);
+  const displayOldRemaining =
+    oldRemaining === null ? null : Math.max(0, oldRemaining);
+  const displayNewRemaining =
+    newRemaining === null ? null : Math.max(0, newRemaining);
+  if (
+    (displayOldRemaining === null || displayOldRemaining === 0) &&
+    displayNewRemaining !== null &&
+    displayNewRemaining > 0
+  )
+    return "seats_available";
+  return null;
 }
 
 export class AcademicRefreshWorker {
@@ -40,6 +80,7 @@ export class AcademicRefreshWorker {
   }
 
   async runOne(): Promise<boolean> {
+    await this.scanWatchedSections();
     const jobs = this.db.collection("refreshJobs");
     const now = this.now();
     const owner = randomUUID();
@@ -69,10 +110,12 @@ export class AcademicRefreshWorker {
       },
       { sort: { availableAt: 1, _id: 1 }, returnDocument: "after" },
     );
-    if (!job) return false;
+    if (!job) return this.projectOne();
     const leaseKey = `${job.source}:${job.termCode}:quota:${job.targetId}`;
+    const providerSlot = `${job.source}:quota-provider`;
     const leases = this.db.collection("refreshLeases");
     let leaseHeld = false;
+    let providerSlotHeld = false;
     let live = true;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
@@ -110,6 +153,79 @@ export class AcademicRefreshWorker {
           throw error;
       }
       if (!leaseHeld) throw new QuotaProviderError(true, "RESOURCE_LEASE_BUSY");
+      const providerNow = this.now();
+      let providerLease: Document | null = null;
+      try {
+        providerLease = await leases.findOneAndUpdate(
+          {
+            leaseKey: providerSlot,
+            $and: [
+              {
+                $or: [
+                  { nextAllowedAt: { $lte: providerNow } },
+                  { nextAllowedAt: { $exists: false } },
+                ],
+              },
+              {
+                $or: [
+                  { providerLeaseExpiresAt: { $lte: providerNow } },
+                  { providerLeaseExpiresAt: { $exists: false } },
+                ],
+              },
+            ],
+          },
+          {
+            $set: {
+              providerOwner: owner,
+              nextAllowedAt: new Date(
+                providerNow.getTime() +
+                  this.settings.quotaMinIntervalSeconds * 1000,
+              ),
+              providerLeaseExpiresAt: new Date(
+                providerNow.getTime() +
+                  Math.max(
+                    this.settings.leaseSeconds,
+                    this.settings.quotaMinIntervalSeconds,
+                  ) *
+                    1000,
+              ),
+            },
+            $setOnInsert: { leaseKey: providerSlot },
+          },
+          { upsert: true, returnDocument: "after" },
+        );
+      } catch (error) {
+        if (
+          !(
+            error &&
+            typeof error === "object" &&
+            "code" in error &&
+            error.code === 11000
+          )
+        )
+          throw error;
+      }
+      providerSlotHeld = providerLease?.providerOwner === owner;
+      if (!providerSlotHeld) {
+        const current = await leases.findOne({ leaseKey: providerSlot });
+        const nextAllowedAt =
+          current?.nextAllowedAt instanceof Date
+            ? current.nextAllowedAt
+            : new Date(
+                providerNow.getTime() +
+                  this.settings.quotaMinIntervalSeconds * 1000,
+              );
+        await jobs.updateOne(jobFilter(job, owner), {
+          $set: {
+            status: "queued",
+            availableAt: nextAllowedAt,
+            updatedAt: this.now().toISOString(),
+          },
+          $unset: { claimOwner: "", leaseExpiresAt: "", startedAt: "" },
+          $inc: { attempts: -1 },
+        });
+        return true;
+      }
       heartbeat = setInterval(
         async () => {
           if (!live) return;
@@ -127,7 +243,26 @@ export class AcademicRefreshWorker {
                 { $set: { expiresAt: expiry, renewedAt: at } },
               ),
             ]);
-            if (!jobResult.matchedCount || !leaseResult.matchedCount)
+            const providerResult = await leases.updateOne(
+              { leaseKey: providerSlot, providerOwner: owner },
+              {
+                $set: {
+                  providerLeaseExpiresAt: new Date(
+                    at.getTime() +
+                      Math.max(
+                        this.settings.leaseSeconds,
+                        this.settings.quotaMinIntervalSeconds,
+                      ) *
+                        1000,
+                  ),
+                },
+              },
+            );
+            if (
+              !jobResult.matchedCount ||
+              !leaseResult.matchedCount ||
+              !providerResult.matchedCount
+            )
               live = false;
           } catch {
             live = false;
@@ -140,6 +275,7 @@ export class AcademicRefreshWorker {
       if (
         observation.sectionId !== job.targetId ||
         observation.source !== job.source ||
+        !Number.isFinite(Date.parse(observation.observedAt)) ||
         observation.snapshotId !==
           `${observation.sectionId}@${observation.observedAt}`
       )
@@ -157,6 +293,7 @@ export class AcademicRefreshWorker {
         job.termCode,
         observation,
         this.settings.quotaMinIntervalSeconds,
+        this.now(),
       );
       await jobs.updateOne(jobFilter(job, owner), {
         $set: {
@@ -166,6 +303,11 @@ export class AcademicRefreshWorker {
         },
         $unset: { claimOwner: "", leaseExpiresAt: "" },
       });
+      await leases.updateOne(
+        { leaseKey: providerSlot, providerOwner: owner },
+        { $unset: { providerOwner: "", providerLeaseExpiresAt: "" } },
+      );
+      providerSlotHeld = false;
     } catch (error) {
       const owned = await jobs.findOne({
         ...jobFilter(job, owner),
@@ -208,14 +350,345 @@ export class AcademicRefreshWorker {
             availableAt,
             permanent ? "permanently_failed" : "retryable_failed",
             new Date(job.startedAt),
+            this.now(),
           );
       }
     } finally {
       live = false;
       if (heartbeat) clearInterval(heartbeat);
+      if (providerSlotHeld)
+        await leases.updateOne(
+          { leaseKey: providerSlot, providerOwner: owner },
+          {
+            $unset: { providerOwner: "", providerLeaseExpiresAt: "" },
+          },
+        );
       if (leaseHeld) await leases.deleteOne({ leaseKey, ownerId: owner });
     }
     return true;
+  }
+
+  /** Enqueue due watched sections without making provider calls in the scan. */
+  async scanWatchedSections(): Promise<number> {
+    const watches = await this.db
+      .collection("courseWatches")
+      .find({}, { projection: { termCode: 1, targetType: 1, targetId: 1 } })
+      .toArray();
+    if (!watches.length) return 0;
+
+    const termCodes = [
+      ...new Set(watches.map((watch) => String(watch.termCode))),
+    ];
+    const terms = await this.db
+      .collection("academicTerms")
+      .find({
+        source: ACADEMIC_SOURCE,
+        termCode: { $in: termCodes },
+        activeImportBatchId: { $type: "string" },
+      })
+      .project({ termCode: 1, activeImportBatchId: 1 })
+      .toArray();
+    const sections = new Map<string, { termCode: string; dueAt: number }>();
+    for (const term of terms) {
+      const termCode = String(term.termCode);
+      const activeImportBatchId = String(term.activeImportBatchId);
+      const termWatches = watches.filter(
+        (watch) => String(watch.termCode) === termCode,
+      );
+      const directIds = termWatches
+        .filter((watch) => watch.targetType === "section")
+        .map((watch) => String(watch.targetId));
+      const courseIds = termWatches
+        .filter((watch) => watch.targetType === "course")
+        .map((watch) => String(watch.targetId));
+      const activeKey = {
+        source: ACADEMIC_SOURCE,
+        termCode,
+        importBatchId: activeImportBatchId,
+        retiredAt: null,
+      };
+      const courseOfferingRows = courseIds.length
+        ? await this.db
+            .collection("courseOfferings")
+            .find({ ...activeKey, courseId: { $in: courseIds } })
+            .project({ offeringId: 1 })
+            .toArray()
+        : [];
+      const offeringIds = courseOfferingRows.map((row) => row.offeringId);
+      const activeSections = await this.db
+        .collection("classSections")
+        .find({
+          ...activeKey,
+          $or: [
+            ...(directIds.length ? [{ sectionId: { $in: directIds } }] : []),
+            ...(offeringIds.length
+              ? [
+                  {
+                    offeringId: { $in: offeringIds },
+                  },
+                ]
+              : []),
+          ],
+        })
+        .project({ sectionId: 1 })
+        .toArray();
+      const sectionIds = [
+        ...new Set(activeSections.map((row) => String(row.sectionId))),
+      ];
+      if (!sectionIds.length) continue;
+      const latestRows = await this.db
+        .collection("latestQuotas")
+        .find({ source: ACADEMIC_SOURCE, sectionId: { $in: sectionIds } })
+        .toArray();
+      const latestBySection = new Map(
+        latestRows.map((row) => [String(row.sectionId), row]),
+      );
+      const now = this.now().getTime();
+      for (const sectionId of sectionIds) {
+        const latest = latestBySection.get(sectionId);
+        const observedAt = Date.parse(String(latest?.observedAt ?? ""));
+        const explicitNext = Date.parse(String(latest?.nextRefreshAt ?? ""));
+        const dueAt = Number.isFinite(explicitNext)
+          ? explicitNext
+          : Number.isFinite(observedAt)
+            ? observedAt + (this.settings.quotaTtlSeconds ?? 900) * 1000
+            : Number.NEGATIVE_INFINITY;
+        if (dueAt > now) continue;
+        const existing = sections.get(sectionId);
+        if (!existing || dueAt < existing.dueAt)
+          sections.set(sectionId, { termCode, dueAt });
+      }
+    }
+    const max = this.settings.maxWatchedJobsPerPoll ?? 100;
+    const due = [...sections.entries()]
+      .sort(
+        ([left, a], [right, b]) =>
+          a.dueAt - b.dueAt || left.localeCompare(right),
+      )
+      .slice(0, max);
+    let enqueued = 0;
+    for (const [sectionId, value] of due) {
+      if (
+        await enqueueQuotaRefreshJob(
+          this.db,
+          ACADEMIC_SOURCE,
+          value.termCode,
+          sectionId,
+          this.now(),
+        )
+      )
+        enqueued += 1;
+    }
+    return enqueued;
+  }
+
+  async projectOne(): Promise<boolean> {
+    const snapshots = this.db.collection("quotaSnapshots");
+    const now = this.now();
+    const owner = randomUUID();
+    const leaseSeconds = this.settings.projectionLeaseSeconds ?? 60;
+    const snapshot = await snapshots.findOneAndUpdate(
+      {
+        $or: [
+          { projectionStatus: "pending" },
+          { projectionStatus: { $exists: false } },
+          {
+            projectionStatus: "processing",
+            $or: [
+              { projectionLeaseExpiresAt: { $lte: now } },
+              { projectionLeaseExpiresAt: { $exists: false } },
+            ],
+          },
+        ],
+      },
+      {
+        $set: {
+          projectionStatus: "processing",
+          projectionLeaseOwner: owner,
+          projectionLeaseExpiresAt: new Date(
+            now.getTime() + leaseSeconds * 1000,
+          ),
+          updatedAt: now.toISOString(),
+        },
+        $inc: { projectionAttempts: 1 },
+      },
+      { sort: { observedAt: 1, snapshotId: 1 }, returnDocument: "after" },
+    );
+    if (!snapshot) return false;
+    const snapshotId = String(snapshot.snapshotId);
+    const sectionId = String(snapshot.sectionId);
+    const observedAt = String(snapshot.observedAt);
+    const checkpoint = await this.db
+      .collection("watchProjectionCheckpoints")
+      .findOne({
+        source: snapshot.source,
+        sectionId,
+      });
+    const finish = async () => {
+      await snapshots.updateOne(
+        {
+          _id: snapshot._id,
+          projectionStatus: "processing",
+          projectionLeaseOwner: owner,
+        },
+        {
+          $set: {
+            projectionStatus: "done",
+            updatedAt: this.now().toISOString(),
+          },
+          $unset: { projectionLeaseOwner: "", projectionLeaseExpiresAt: "" },
+        },
+      );
+    };
+    const earlier = await snapshots.findOne({
+      source: snapshot.source,
+      sectionId,
+      $or: [
+        { observedAt: { $lt: observedAt } },
+        { observedAt, snapshotId: { $lt: snapshotId } },
+      ],
+      projectionStatus: { $ne: "done" },
+    });
+    if (earlier) {
+      await snapshots.updateOne(
+        {
+          _id: snapshot._id,
+          projectionStatus: "processing",
+          projectionLeaseOwner: owner,
+        },
+        {
+          $set: {
+            projectionStatus: "pending",
+            updatedAt: this.now().toISOString(),
+          },
+          $unset: { projectionLeaseOwner: "", projectionLeaseExpiresAt: "" },
+        },
+      );
+      return true;
+    }
+    if (
+      checkpoint &&
+      Date.parse(String(checkpoint.lastObservedAt)) >= Date.parse(observedAt)
+    ) {
+      await finish();
+      return true;
+    }
+    const previous = await snapshots
+      .find({
+        source: snapshot.source,
+        sectionId,
+        observedAt: { $lt: observedAt },
+      })
+      .sort({ observedAt: -1, snapshotId: -1 })
+      .limit(1)
+      .next();
+    const watches = await this.watchesForSection(
+      String(snapshot.termCode),
+      sectionId,
+    );
+    for (const watch of watches) {
+      if (watch.notificationPreference !== "in_app") continue;
+      const baselineId = watch.baselineBySection?.[sectionId] ?? null;
+      if (baselineId === snapshotId) continue;
+      const baseline = baselineId
+        ? await snapshots.findOne({
+            source: snapshot.source,
+            sectionId,
+            snapshotId: baselineId,
+          })
+        : null;
+      if (
+        String(snapshot.recordedAt ?? "") <= String(watch.baselineRecordedAt) ||
+        (baseline &&
+          Date.parse(observedAt) <= Date.parse(String(baseline.observedAt)))
+      )
+        continue;
+      const change = quotaChange(previous, snapshot);
+      if (!change) continue;
+      const notification: Document = {
+        notificationId: randomUUID(),
+        ownerUsername: watch.ownerUsername,
+        watchId: watch.watchId,
+        termCode: watch.termCode,
+        targetType: watch.targetType,
+        targetId: watch.targetId,
+        changeType: change,
+        beforeState: quotaState(previous),
+        afterState: quotaState(snapshot),
+        observedAt,
+        dedupeKey: `${watch.watchId}:${snapshotId}:${change}`,
+        readAt: null,
+        createdAt: this.now().toISOString(),
+      };
+      try {
+        await this.db.collection("watchNotifications").insertOne(notification);
+      } catch (error) {
+        if (
+          !(
+            error &&
+            typeof error === "object" &&
+            "code" in error &&
+            error.code === 11000
+          )
+        )
+          throw error;
+      }
+    }
+    await this.db.collection("watchProjectionCheckpoints").updateOne(
+      { source: snapshot.source, sectionId },
+      {
+        $set: {
+          source: snapshot.source,
+          sectionId,
+          lastObservedAt: observedAt,
+          lastSnapshotId: snapshotId,
+          updatedAt: this.now().toISOString(),
+        },
+      },
+      { upsert: true },
+    );
+    await finish();
+    return true;
+  }
+
+  private async watchesForSection(termCode: string, sectionId: string) {
+    const watches = this.db.collection("courseWatches");
+    const direct = await watches
+      .find({
+        termCode,
+        targetType: "section",
+        targetId: sectionId,
+      })
+      .toArray();
+    const term = await this.db.collection("academicTerms").findOne({
+      source: ACADEMIC_SOURCE,
+      termCode,
+    });
+    if (!term?.activeImportBatchId) return direct;
+    const section = await this.db.collection("classSections").findOne({
+      source: ACADEMIC_SOURCE,
+      termCode,
+      importBatchId: term.activeImportBatchId,
+      retiredAt: null,
+      sectionId,
+    });
+    if (!section) return direct;
+    const offering = await this.db.collection("courseOfferings").findOne({
+      source: ACADEMIC_SOURCE,
+      termCode,
+      importBatchId: term.activeImportBatchId,
+      retiredAt: null,
+      offeringId: section.offeringId,
+    });
+    if (!offering) return direct;
+    const courseWatches = await watches
+      .find({
+        termCode,
+        targetType: "course",
+        targetId: offering.courseId,
+      })
+      .toArray();
+    return [...direct, ...courseWatches];
   }
 
   private async resolveTarget(job: Document): Promise<QuotaTarget> {

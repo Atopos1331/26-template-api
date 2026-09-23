@@ -44,7 +44,7 @@ const base = {
   minDifferentBundles: 1,
 };
 
-test("normalizes course identity and rejects deferred Phase 08 inputs", () => {
+test("normalizes course identity and accepts Phase 08 inputs", () => {
   expect(
     normalizeAutoPlanRequest({ courses: [{ courseCode: " comp 2611 " }] })
       .courses[0]?.courseCode,
@@ -55,12 +55,12 @@ test("normalizes course identity and rejects deferred Phase 08 inputs", () => {
       mode: "custom",
     }),
   ).toThrow();
-  expect(() =>
+  expect(
     normalizeAutoPlanRequest({
       courses: [{ courseCode: "COMP2611" }],
       fill: {},
-    }),
-  ).toThrow();
+    }).fill?.maxCourses,
+  ).toBe(0);
   expect(() =>
     normalizeAutoPlanRequest({ courses: [{ courseCode: "" }] }),
   ).toThrow();

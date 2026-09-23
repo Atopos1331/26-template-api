@@ -6,6 +6,13 @@ import {
   AcademicError,
   academicIdentity,
 } from "../domain/academic.js";
+import {
+  calculateQuotaTrend,
+  effectiveRemaining,
+  enrollmentDifficulty,
+  type QuotaTrendWindow,
+  selectQuotaTrendObservations,
+} from "../domain/quota.js";
 import type {
   BundleSchema,
   CourseSummarySchema,
@@ -13,6 +20,10 @@ import type {
   QuotaSchema,
   TermSchema,
 } from "../http/academic-schemas.js";
+import {
+  enqueueQuotaRefreshJob,
+  quotaSnapshots,
+} from "../repositories/quotas.js";
 
 type Freshness = {
   asOf: string | null;
@@ -121,6 +132,15 @@ const quotaFields = [
   "open",
   "observedAt",
 ];
+
+function quotaResponse(document: Document) {
+  const rawRemaining = effectiveRemaining(document);
+  return {
+    ...clean<Static<typeof QuotaSchema>>(document, quotaFields),
+    remaining: rawRemaining === null ? null : Math.max(0, rawRemaining),
+    ...(rawRemaining !== null && rawRemaining < 0 ? { rawRemaining } : {}),
+  };
+}
 
 export class AcademicService {
   constructor(
@@ -592,41 +612,13 @@ export class AcademicService {
     sectionId: string,
     termCode: string,
   ): Promise<boolean> {
-    const dedupeKey = `${ACADEMIC_SOURCE}:${termCode}:quota:${sectionId}`;
-    const jobs = this.db.collection("refreshJobs");
-    const active = ["queued", "running", "retryable_failed"];
-    try {
-      await jobs.updateOne(
-        { dedupeKey, status: { $in: active } },
-        {
-          $setOnInsert: {
-            dedupeKey,
-            jobType: "section_quota",
-            source: ACADEMIC_SOURCE,
-            termCode,
-            resourceType: "quota",
-            targetId: sectionId,
-            status: "queued",
-            attempts: 0,
-            claimGeneration: 0,
-            availableAt: this.now(),
-            createdAt: this.now().toISOString(),
-            updatedAt: this.now().toISOString(),
-          },
-        },
-        { upsert: true },
-      );
-    } catch (error) {
-      if (
-        !(
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          error.code === 11000
-        )
-      )
-        throw error;
-    }
+    await enqueueQuotaRefreshJob(
+      this.db,
+      ACADEMIC_SOURCE,
+      termCode,
+      sectionId,
+      this.now(),
+    );
     return true;
   }
 
@@ -659,8 +651,99 @@ export class AcademicService {
         503,
         "Quota is not available",
       );
+    const history = await quotaSnapshots(this.db, ACADEMIC_SOURCE, sectionId);
+    const trend = calculateQuotaTrend(
+      selectQuotaTrendObservations(history, "14d", this.now()),
+      "14d",
+      this.now(),
+    );
     return {
-      data: clean<Static<typeof QuotaSchema>>(latest, quotaFields),
+      data: {
+        ...quotaResponse(latest),
+        difficulty: enrollmentDifficulty(
+          latest as unknown as
+            | import("../domain/quota.js").QuotaObservationLike
+            | null,
+          trend,
+        ),
+      },
+      meta: { freshness },
+    };
+  }
+
+  async getQuotaTrends(
+    sectionId: string,
+    window: QuotaTrendWindow = "14d",
+    limit = 100,
+    cursor?: string,
+  ) {
+    const identity = academicIdentity(sectionId, "section");
+    const term = await this.term(identity.termCode);
+    const section = await this.db.collection("classSections").findOne({
+      ...identity,
+      sectionId,
+      importBatchId: term.activeImportBatchId,
+      retiredAt: null,
+    });
+    if (!section)
+      throw new AcademicError("not_found", 404, "Section not found");
+    const latest = await this.db
+      .collection("latestQuotas")
+      .findOne({ source: ACADEMIC_SOURCE, sectionId });
+    const now = this.now();
+    const freshness = this.freshness(latest, this.settings.quotaTtlSeconds);
+    if (
+      freshness.isStale &&
+      (!latest?.nextRefreshAt ||
+        Date.parse(latest.nextRefreshAt) <= now.getTime())
+    ) {
+      await this.enqueueQuota(sectionId, identity.termCode);
+      freshness.state = "refreshing";
+    }
+    const all = await quotaSnapshots(this.db, ACADEMIC_SOURCE, sectionId);
+    const observations = selectQuotaTrendObservations(all, window, now);
+    const trend = calculateQuotaTrend(observations, window, now);
+    const filters = JSON.stringify({ window });
+    const last = this.readCursor(cursor, "quota-trends", sectionId, filters);
+    const start = last
+      ? observations.findIndex(
+          (row) => `${row.observedAt}\0${row.snapshotId}` === last,
+        ) + 1
+      : 0;
+    if (last && start === 0)
+      throw new AcademicError("invalid_cursor", 400, "Invalid cursor");
+    const selected = observations.slice(start, start + limit + 1);
+    const visible = selected.slice(0, limit).map((row) => ({
+      ...quotaResponse(row),
+    }));
+    const lastRow = visible.at(-1);
+    const difficulty = enrollmentDifficulty(
+      latest as unknown as
+        | import("../domain/quota.js").QuotaObservationLike
+        | null,
+      trend,
+    );
+    return {
+      data: {
+        sectionId,
+        latest: latest ? quotaResponse(latest) : null,
+        observations: visible,
+        trend,
+        difficulty,
+        freshness,
+      },
+      page: {
+        nextCursor:
+          selected.length > limit && lastRow
+            ? this.cursor(
+                "quota-trends",
+                sectionId,
+                filters,
+                `${lastRow.observedAt}\0${lastRow.snapshotId}`,
+              )
+            : null,
+        hasMore: selected.length > limit,
+      },
       meta: { freshness },
     };
   }

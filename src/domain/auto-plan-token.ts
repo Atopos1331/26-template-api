@@ -10,7 +10,11 @@ export type AutoPlanTokenPayload = {
   importBatchId: string;
   importFence: number | null;
   selectedBundleIds: string[];
+  fillerBundleIds?: string[];
   quotaSnapshotIds: Record<string, string | null>;
+  quotaTrendObservationIds?: Record<string, string[]>;
+  quotaStale?: Record<string, boolean>;
+  commonCore?: { catalogVersion: string; stateRevision: number } | null;
   requestHash: string;
   request: unknown;
   horizon: {
@@ -71,8 +75,24 @@ export function verifyAutoPlanToken(
         !Number.isSafeInteger(payload.importFence)) ||
       !Array.isArray(payload.selectedBundleIds) ||
       payload.selectedBundleIds.some((id) => typeof id !== "string") ||
+      (payload.fillerBundleIds !== undefined &&
+        (!Array.isArray(payload.fillerBundleIds) ||
+          payload.fillerBundleIds.some((id) => typeof id !== "string"))) ||
       payload.quotaSnapshotIds === null ||
       typeof payload.quotaSnapshotIds !== "object" ||
+      (payload.quotaTrendObservationIds !== undefined &&
+        (payload.quotaTrendObservationIds === null ||
+          typeof payload.quotaTrendObservationIds !== "object" ||
+          Object.values(payload.quotaTrendObservationIds).some(
+            (ids) =>
+              !Array.isArray(ids) || ids.some((id) => typeof id !== "string"),
+          ))) ||
+      (payload.quotaStale !== undefined &&
+        (payload.quotaStale === null ||
+          typeof payload.quotaStale !== "object" ||
+          Object.values(payload.quotaStale).some(
+            (value) => typeof value !== "boolean",
+          ))) ||
       typeof payload.requestHash !== "string" ||
       payload.request === undefined ||
       (payload.horizon !== null &&

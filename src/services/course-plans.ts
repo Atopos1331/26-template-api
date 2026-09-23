@@ -20,6 +20,7 @@ import {
   compactnessScore,
   derivePlanningHorizon,
   hardMeetingViolation,
+  instructorFitScore,
   type PlanningHorizon,
   type ScheduleMetrics,
   scheduleMetrics,
@@ -61,6 +62,11 @@ import {
   planId,
 } from "../domain/plans.js";
 import {
+  calculateQuotaTrend,
+  effectiveRemaining,
+  enrollmentDifficulty,
+} from "../domain/quota.js";
+import {
   normalizeRecommendationRequest,
   type RecommendationRequest,
 } from "../domain/recommendations.js";
@@ -68,6 +74,7 @@ import type {
   EventDocument,
   IdempotencyRecordDocument,
 } from "../plugins/init-mongo.js";
+import type { CommonCoreRepository } from "../repositories/common-core.js";
 import type {
   CanonicalBundle,
   CourseCatalogRepository,
@@ -90,6 +97,8 @@ type PlanSettings = {
   autoPlanSolverTimeoutMs?: number;
   autoPlanSolverConcurrency?: number;
   autoPlanMaxRequestBytes?: number;
+  commonCoreMaxAgeDays?: number;
+  academicQuotaTtlSeconds?: number;
   idempotencyRetentionSeconds: number;
   defaultTermCode?: string;
   now?: () => Date;
@@ -102,6 +111,16 @@ type QuotaDocument = Document & {
   capacity?: number | null;
   remaining?: number | null;
   open?: boolean | null;
+  waitlisted?: number | null;
+};
+
+type FillerSchedule = {
+  canonical: CanonicalBundle;
+  metrics: ScheduleMetrics;
+  quota: ReturnType<typeof historicalQuotaBundleScore>;
+  timeFit: number;
+  compactness: number;
+  instructorFit: number;
 };
 
 const AUTO_PLAN_APPLY_ROUTE = "POST /plans/:id/auto-plans/apply";
@@ -180,31 +199,198 @@ function bundleMeetings(canonical: CanonicalBundle) {
   );
 }
 
-function latestQuotaScore(
+function historicalQuotaSectionScore(
+  section: Document,
+  latest: QuotaDocument | undefined,
+  history: Document[],
+) {
+  const dataQuality: string[] = [];
+  const latestRemaining = effectiveRemaining(latest ?? {});
+  const inconsistent = latestRemaining !== null && latestRemaining < 0;
+  if (inconsistent) dataQuality.push("quota_inconsistent");
+  const open =
+    typeof latest?.open === "boolean"
+      ? latest.open
+      : typeof section.open === "boolean"
+        ? section.open
+        : null;
+  if (open === false)
+    return {
+      score: 0,
+      unknown: false,
+      inconsistent,
+      closed: true,
+      full: false,
+      dataQuality,
+    };
+  if (open === null) dataQuality.push("quota_unknown");
+  const capacity =
+    typeof latest?.capacity === "number" && latest.capacity > 0
+      ? latest.capacity
+      : null;
+  const remaining =
+    latestRemaining === null ? null : Math.max(0, latestRemaining);
+  if (open === null || capacity === null || remaining === null)
+    return {
+      score: 50,
+      unknown: true,
+      inconsistent,
+      closed: false,
+      full: false,
+      dataQuality: [
+        ...new Set([
+          ...dataQuality,
+          ...(remaining === null ? ["remaining_missing"] : []),
+          "quota_unknown",
+        ]),
+      ],
+    };
+  const observations = history
+    .filter((row) => Number.isFinite(Date.parse(String(row.observedAt))))
+    .sort(
+      (left, right) =>
+        Date.parse(String(left.observedAt)) -
+          Date.parse(String(right.observedAt)) ||
+        String(left.snapshotId).localeCompare(String(right.snapshotId)),
+    );
+  const latestAt = Date.parse(String(latest?.observedAt ?? ""));
+  const trendFor = (field: "remaining" | "waitlisted") => {
+    const valueFor = (row: Document) =>
+      field === "remaining" ? effectiveRemaining(row) : (row[field] ?? null);
+    const current =
+      field === "remaining" ? latestRemaining : (latest?.[field] ?? null);
+    if (typeof current !== "number" || !Number.isFinite(current)) {
+      dataQuality.push(
+        field === "remaining" ? "remaining_missing" : "waitlist_missing",
+      );
+      return 0.5;
+    }
+    const earlier = observations
+      .filter(
+        (row) =>
+          Date.parse(String(row.observedAt)) < latestAt &&
+          typeof valueFor(row) === "number" &&
+          Number.isFinite(valueFor(row)),
+      )
+      .reverse();
+    const prior =
+      earlier.find(
+        (row) =>
+          latestAt - Date.parse(String(row.observedAt)) <= 7 * 86_400_000,
+      ) ??
+      earlier.find(
+        (row) =>
+          latestAt - Date.parse(String(row.observedAt)) <= 14 * 86_400_000,
+      ) ??
+      earlier[0];
+    if (!prior) {
+      dataQuality.push("insufficient_data");
+      return 0.5;
+    }
+    const previous = Math.max(0, Number(valueFor(prior)));
+    const currentValue = Math.max(0, current);
+    const delta =
+      (currentValue - previous) /
+      Math.max(1, Math.abs(previous), capacity * 0.1);
+    const mapped = Math.max(-1, Math.min(1, delta));
+    const trend = 0.5 + (field === "remaining" ? 0.5 : -0.5) * mapped;
+    return Math.max(0, Math.min(1, trend));
+  };
+  const waitlisted =
+    typeof latest?.waitlisted === "number" && Number.isFinite(latest.waitlisted)
+      ? Math.max(0, latest.waitlisted)
+      : null;
+  const seatRatio = Math.max(0, Math.min(1, remaining / capacity));
+  const queueScore =
+    waitlisted === null
+      ? 0.5
+      : 1 - Math.max(0, Math.min(1, waitlisted / capacity));
+  const remainingTrend = trendFor("remaining");
+  const waitlistTrend = trendFor("waitlisted");
+  const full = remaining === 0;
+  const score = full
+    ? 39 * (0.6 * queueScore + 0.4 * waitlistTrend)
+    : 40 +
+      60 *
+        (0.5 * seatRatio +
+          0.2 * queueScore +
+          0.15 * remainingTrend +
+          0.15 * waitlistTrend);
+  return {
+    score: Math.round(score * 100) / 100,
+    unknown: false,
+    inconsistent,
+    closed: false,
+    full,
+    dataQuality: [...new Set(dataQuality)],
+  };
+}
+
+function quotaRiskObservationIds(
+  latest: QuotaDocument | undefined,
+  history: Document[],
+) {
+  const ids = new Set<string>();
+  if (latest?.snapshotId) ids.add(String(latest.snapshotId));
+  const latestAt = Date.parse(String(latest?.observedAt ?? ""));
+  if (!Number.isFinite(latestAt)) return [...ids].sort();
+  for (const field of ["remaining", "waitlisted"] as const) {
+    const valueFor = (row: Document) =>
+      field === "remaining" ? effectiveRemaining(row) : (row[field] ?? null);
+    const current = valueFor(latest ?? {});
+    if (typeof current !== "number" || !Number.isFinite(current)) continue;
+    const previous = history
+      .filter(
+        (row) =>
+          Date.parse(String(row.observedAt)) < latestAt &&
+          typeof valueFor(row) === "number" &&
+          Number.isFinite(valueFor(row)) &&
+          typeof row.snapshotId === "string",
+      )
+      .sort(
+        (left, right) =>
+          Date.parse(String(right.observedAt)) -
+            Date.parse(String(left.observedAt)) ||
+          String(right.snapshotId).localeCompare(String(left.snapshotId)),
+      )[0];
+    if (previous) ids.add(String(previous.snapshotId));
+  }
+  return [...ids].sort();
+}
+
+function quotaIsStale(
+  quota: QuotaDocument | undefined,
+  settings: PlanSettings,
+  now = settings.now?.() ?? new Date(),
+) {
+  const observedAt = Date.parse(String(quota?.observedAt ?? ""));
+  return (
+    !Number.isFinite(observedAt) ||
+    observedAt + (settings.academicQuotaTtlSeconds ?? 900) * 1000 <=
+      now.getTime()
+  );
+}
+
+function historicalQuotaBundleScore(
   canonical: CanonicalBundle,
   quotas: Map<string, QuotaDocument>,
+  history: Map<string, Document[]>,
 ) {
-  let score = 50;
-  let unknown = false;
-  let inconsistent = false;
-  let full = false;
-  for (const section of canonical.sections) {
-    const quota = quotas.get(String(section.sectionId));
-    const result = quotaSectionScore(section, quota);
-    if (result.closed)
-      return {
-        score: 0,
-        unknown: unknown || result.unknown,
-        inconsistent: inconsistent || result.inconsistent,
-        closed: true,
-        full,
-      };
-    unknown ||= result.unknown;
-    inconsistent ||= result.inconsistent;
-    full ||= result.full;
-    score = Math.min(score, result.score);
-  }
-  return { score, unknown, inconsistent, closed: false, full };
+  const scores = canonical.sections.map((section) =>
+    historicalQuotaSectionScore(
+      section,
+      quotas.get(String(section.sectionId)),
+      history.get(String(section.sectionId)) ?? [],
+    ),
+  );
+  return {
+    score: scores.length ? Math.min(...scores.map((value) => value.score)) : 50,
+    unknown: scores.some((value) => value.unknown),
+    inconsistent: scores.some((value) => value.inconsistent),
+    closed: scores.some((value) => value.closed),
+    full: scores.some((value) => value.full),
+    dataQuality: [...new Set(scores.flatMap((value) => value.dataQuality))],
+  };
 }
 
 function quotaSectionScore(
@@ -217,33 +403,34 @@ function quotaSectionScore(
       : typeof section?.open === "boolean"
         ? section.open
         : null;
+  const remainingValue = effectiveRemaining(quota ?? {});
+  const inconsistent = remainingValue !== null && remainingValue < 0;
+  const dataQuality: string[] = [];
+  if (inconsistent) dataQuality.push("quota_inconsistent");
   if (open === false)
     return {
       score: 0,
       unknown: false,
-      inconsistent: false,
+      inconsistent,
       closed: true,
       full: false,
+      dataQuality,
     };
-  if (open !== true)
-    return {
-      score: 50,
-      unknown: true,
-      inconsistent: false,
-      closed: false,
-      full: false,
-    };
-  const inconsistent =
-    typeof quota?.remaining === "number" && quota.remaining < 0;
+  if (open === null) dataQuality.push("quota_unknown");
   const remaining =
-    typeof quota?.remaining === "number" ? Math.max(0, quota.remaining) : null;
-  if (!quota || (quota.capacity == null && quota.remaining == null))
+    remainingValue === null ? null : Math.max(0, remainingValue);
+  if (
+    open === null ||
+    !quota ||
+    (quota.capacity == null && quota.remaining == null)
+  )
     return {
       score: 50,
       unknown: true,
       inconsistent,
       closed: false,
       full: false,
+      dataQuality: [...new Set([...dataQuality, "quota_unknown"])],
     };
   const capacity =
     typeof quota.capacity === "number" && quota.capacity > 0
@@ -256,6 +443,7 @@ function quotaSectionScore(
       inconsistent,
       closed: false,
       full: false,
+      dataQuality: [...new Set([...dataQuality, "quota_unknown"])],
     };
   if (remaining === 0)
     return {
@@ -264,6 +452,7 @@ function quotaSectionScore(
       inconsistent,
       closed: false,
       full: true,
+      dataQuality,
     };
   return {
     score: Math.round(Math.max(0, Math.min(1, remaining / capacity)) * 100),
@@ -271,6 +460,7 @@ function quotaSectionScore(
     inconsistent,
     closed: false,
     full: false,
+    dataQuality,
   };
 }
 
@@ -291,33 +481,6 @@ function quotaSnapshotMap(
         quotas.get(sectionId)?.snapshotId ?? null,
       ]),
   );
-}
-
-function quotaBottlenecks(
-  canonical: CanonicalBundle[],
-  quotas: Map<string, QuotaDocument>,
-) {
-  return canonical
-    .flatMap((item) =>
-      item.sections.map((section) => {
-        const quota = quotas.get(String(section.sectionId));
-        const score = quotaSectionScore(section, quota);
-        return {
-          sectionId: String(section.sectionId),
-          score: score.score,
-          unknown: score.unknown,
-          dataQuality: score.inconsistent ? ["quota_inconsistent"] : [],
-          snapshotId: quota?.snapshotId ?? null,
-          observedAt: quota?.observedAt ?? null,
-          remaining:
-            typeof quota?.remaining === "number" ? quota.remaining : null,
-          capacity: typeof quota?.capacity === "number" ? quota.capacity : null,
-        };
-      }),
-    )
-    .sort(
-      (a, b) => a.score - b.score || a.sectionId.localeCompare(b.sectionId),
-    );
 }
 
 function optionCourseResponse(canonical: CanonicalBundle) {
@@ -520,6 +683,7 @@ export class CoursePlanService {
     },
     private readonly records: import("mongodb").Collection<IdempotencyRecordDocument>,
     private readonly settings: PlanSettings,
+    private readonly commonCore?: CommonCoreRepository,
   ) {}
 
   private async document(owner: string, id: string): Promise<PlanWithId> {
@@ -966,6 +1130,7 @@ export class CoursePlanService {
 
   async recommendations(owner: string, id: string, input: unknown) {
     const request = normalizeRecommendationRequest(input);
+    const evaluationNow = this.settings.now?.() ?? new Date();
     const document = await this.document(owner, id);
     if (document.status === "archived")
       throw new PlanError(
@@ -1034,6 +1199,13 @@ export class CoursePlanService {
     const quotas = new Map(
       quotaRows.map((quota) => [String(quota.sectionId), quota]),
     );
+    const quotaHistoryRows = await this.catalog.quotaHistory(sectionIds);
+    const quotaHistory = new Map<string, Document[]>();
+    for (const row of quotaHistoryRows) {
+      const group = quotaHistory.get(String(row.sectionId)) ?? [];
+      group.push(row);
+      quotaHistory.set(String(row.sectionId), group);
+    }
     const items = [];
     const rejected: Array<{
       bundle: Record<string, unknown>;
@@ -1045,7 +1217,71 @@ export class CoursePlanService {
         String(bundle.offeringId),
         String(bundle.bundleId),
       );
-      const quota = latestQuotaScore(canonical, quotas);
+      const quota = historicalQuotaBundleScore(canonical, quotas, quotaHistory);
+      const histories = canonical.sections.map((section) =>
+        calculateQuotaTrend(
+          (quotaHistory.get(String(section.sectionId)) ??
+            []) as unknown as import("../domain/quota.js").QuotaObservationLike[],
+          "14d",
+          evaluationNow,
+        ),
+      );
+      const difficulties = canonical.sections.map((section, index) =>
+        enrollmentDifficulty(
+          quotas.get(String(section.sectionId)) as unknown as
+            | import("../domain/quota.js").QuotaObservationLike
+            | undefined,
+          histories[index],
+        ),
+      );
+      const knownDifficulties = difficulties.filter(
+        (value) => value.score !== null,
+      );
+      const componentNames = [
+        "remaining_pressure",
+        "waitlist_pressure",
+        "seat_trend",
+        "openness",
+      ] as const;
+      const difficulty = {
+        version: "difficulty-v1" as const,
+        score: knownDifficulties.length
+          ? Math.round(
+              (knownDifficulties.reduce(
+                (sum, value) => sum + (value.score ?? 0),
+                0,
+              ) /
+                knownDifficulties.length) *
+                100,
+            ) / 100
+          : null,
+        components: componentNames.flatMap((name) => {
+          const values = difficulties.flatMap((value) =>
+            value.components.filter((component) => component.name === name),
+          );
+          if (!values.length) return [];
+          return [
+            {
+              name,
+              value:
+                Math.round(
+                  (values.reduce((sum, value) => sum + (value.value ?? 0), 0) /
+                    values.length) *
+                    100,
+                ) / 100,
+              weight: values[0]!.weight,
+            },
+          ];
+        }),
+        dataQuality: [
+          ...new Set(difficulties.flatMap((value) => value.dataQuality)),
+        ],
+      };
+      const historicalStability = histories.every(
+        (value) => value.status === "ready",
+      )
+        ? 100
+        : null;
       const credits =
         typeof canonical.course.credits === "number"
           ? canonical.course.credits
@@ -1147,6 +1383,12 @@ export class CoursePlanService {
         { value: timeScore, weight: 35 },
         { value: creditFit, weight: 15 },
         ...(quota.unknown ? [] : [{ value: quota.score, weight: 25 }]),
+        ...(difficulty.score === null
+          ? []
+          : [{ value: 100 - difficulty.score, weight: 15 }]),
+        ...(historicalStability === null
+          ? []
+          : [{ value: historicalStability, weight: 10 }]),
       ];
       const score =
         Math.round(
@@ -1164,7 +1406,17 @@ export class CoursePlanService {
           timeFit: timeScore,
           creditFit,
           quotaAvailability: quota.score,
+          enrollmentDifficulty: difficulty.score,
+          historicalStability,
         },
+        quotaFreshness: canonical.sections.map((section) => {
+          const latest = quotas.get(String(section.sectionId));
+          return {
+            sectionId: String(section.sectionId),
+            observedAt: latest?.observedAt ?? null,
+            isStale: quotaIsStale(latest, this.settings, evaluationNow),
+          };
+        }),
         reasons: [
           quota.unknown
             ? "latest quota is incomplete"
@@ -1172,7 +1424,21 @@ export class CoursePlanService {
               ? "a required section is full; waitlist is allowed"
               : "latest quota is available",
         ],
-        dataQuality: quota.unknown ? ["quota_unknown"] : [],
+        dataQuality: [
+          ...(quota.unknown ? ["quota_unknown"] : []),
+          ...(quota.inconsistent ? ["quota_inconsistent"] : []),
+          ...quota.dataQuality,
+          ...(canonical.sections.some((section) =>
+            quotaIsStale(
+              quotas.get(String(section.sectionId)),
+              this.settings,
+              evaluationNow,
+            ),
+          )
+            ? ["quota_stale"]
+            : []),
+          ...difficulty.dataQuality,
+        ],
         replacementItemId: oldTarget?.itemId ?? null,
       });
     }
@@ -1189,7 +1455,7 @@ export class CoursePlanService {
       items: items.slice(0, request.maxRecommendations),
       meta: {
         rejected: rejected.slice(0, 50),
-        scoreVersion: "recommendation-score-v1-phase7-current-quota",
+        scoreVersion: "recommendation-score-v2-quota-history-phase8",
       },
     };
   }
@@ -1198,8 +1464,136 @@ export class CoursePlanService {
     return normalizeAutoPlanRequest(input);
   }
 
+  private async fillerCanonicals(
+    term: import("../repositories/course-catalog.js").ActiveTerm,
+    request: NormalizedAutoPlanRequest,
+    excludedCodes: Set<string>,
+  ) {
+    const fill = request.fill;
+    if (!fill || fill.maxCourses === 0)
+      return {
+        canonicals: [] as CanonicalBundle[],
+        diagnostics: [] as string[],
+        commonCore: null as {
+          catalogVersion: string;
+          stateRevision: number;
+        } | null,
+      };
+    const seedCodes = new Set(fill.courseCodes);
+    let commonCore: {
+      catalogVersion: string;
+      stateRevision: number;
+    } | null = null;
+    if (fill.commonCoreCategoryIds?.length) {
+      if (!this.commonCore)
+        throw new PlanError(
+          "common_core_unavailable",
+          503,
+          "Common Core classification is unavailable",
+        );
+      if (fill.commonCoreAdmissionYear === undefined)
+        throw new PlanError(
+          "invalid_request",
+          400,
+          "fill.commonCoreAdmissionYear is required with Common Core categories",
+        );
+      const preset = await this.commonCore.courseCodesForCategories(
+        fill.commonCoreAdmissionYear,
+        fill.commonCoreCategoryIds,
+        this.settings.now?.() ?? new Date(),
+        this.settings.commonCoreMaxAgeDays ?? 365,
+      );
+      commonCore = {
+        catalogVersion: preset.catalogVersion,
+        stateRevision: preset.stateRevision,
+      };
+      for (const code of preset.courseCodes) seedCodes.add(code);
+    }
+    for (const code of fill.courseCodes) {
+      if (!(await this.catalog.courseCodeExists(code)))
+        throw new PlanError("unknown_course_code", 400, "Unknown course code", {
+          courseCode: code,
+        });
+    }
+    const rows = await this.catalog.fillOfferings(term, {
+      courseCodes: [...seedCodes],
+      subjects: fill.subjects,
+      levels: fill.levels,
+      academicCareer: fill.academicCareer,
+    });
+    const careers = new Map<string, Set<string>>();
+    for (const row of rows) {
+      const code = canonicalCourseCode({
+        course: row.course,
+      } as CanonicalBundle);
+      if (excludedCodes.has(code)) continue;
+      const set = careers.get(code) ?? new Set<string>();
+      set.add(String(row.offering.academicCareer ?? ""));
+      careers.set(code, set);
+    }
+    if (careers.size > 40)
+      throw new PlanError(
+        "candidate_pool_too_large",
+        400,
+        "Filler pool exceeds 40 distinct courses",
+      );
+    if (!fill.academicCareer) {
+      const ambiguous = [...careers.entries()]
+        .filter(([, values]) => values.size > 1)
+        .map(([code]) => code)
+        .sort();
+      if (ambiguous.length)
+        throw new PlanError(
+          "ambiguous_offering",
+          400,
+          "Filler course code maps to multiple academic careers",
+          { courseCodes: ambiguous.slice(0, 20).join(",") },
+        );
+    }
+    const canonicals: CanonicalBundle[] = [];
+    const offeredCodes = new Set(
+      rows.map((row) =>
+        canonicalCourseCode({ course: row.course } as CanonicalBundle),
+      ),
+    );
+    const diagnostics = fill.courseCodes
+      .filter((code) => !offeredCodes.has(code))
+      .map((code) => `${code} is not offered in ${term.termCode}`);
+    const seenCourses = new Set<string>();
+    for (const row of rows) {
+      if (seenCourses.has(String(row.course.courseId))) continue;
+      if (
+        fill.minCredits !== undefined &&
+        (typeof row.course.credits !== "number" ||
+          row.course.credits < fill.minCredits)
+      )
+        continue;
+      if (
+        fill.maxCredits !== undefined &&
+        (typeof row.course.credits !== "number" ||
+          row.course.credits > fill.maxCredits)
+      )
+        continue;
+      const bundles = await this.catalog.bundlesForOffering(
+        term,
+        String(row.offering.offeringId),
+      );
+      for (const bundle of bundles) {
+        const canonical = await this.catalog.resolveBundle(
+          term,
+          String(bundle.offeringId),
+          String(bundle.bundleId),
+        );
+        canonicals.push(canonical);
+      }
+      seenCourses.add(String(row.course.courseId));
+    }
+    return { canonicals, diagnostics, commonCore };
+  }
+
   async autoPlans(owner: string, id: string, input: unknown) {
     const request = this.normalizeAuto(input);
+    const evaluationNow = this.settings.now?.() ?? new Date();
     const document = await this.document(owner, id);
     if (document.status === "archived")
       throw new PlanError(
@@ -1217,6 +1611,8 @@ export class CoursePlanService {
         "Normalized request is too large",
       );
     const term = await this.catalog.activeTerm(document.termCode);
+    const deadline =
+      Date.now() + (this.settings.autoPlanSolverTimeoutMs ?? 8_000);
     const requested = [...request.courses];
     if (request.includeCurrentSelected) {
       for (const item of document.items.filter(
@@ -1353,9 +1749,25 @@ export class CoursePlanService {
         });
     }
 
-    const allMeetings = rawCandidates.flatMap(({ canonical }) =>
-      canonicalMeetings(canonical),
+    const fillerPool = await this.fillerCanonicals(
+      term,
+      normalizedRequest,
+      new Set(requested.map((course) => course.courseCode)),
     );
+    const rawFillerCanonicals = fillerPool.canonicals;
+    for (const canonical of rawFillerCanonicals) {
+      canonicalById.set(String(canonical.bundle.bundleId), canonical);
+      sectionIds.push(
+        ...canonical.sections.map((section) => String(section.sectionId)),
+      );
+    }
+
+    const allMeetings = [
+      ...rawCandidates.flatMap(({ canonical }) => canonicalMeetings(canonical)),
+      ...rawFillerCanonicals.flatMap((canonical) =>
+        canonicalMeetings(canonical),
+      ),
+    ];
     const hasDatedMeeting = allMeetings.some(
       (meeting) => meeting.startDate || meeting.endDate,
     );
@@ -1376,6 +1788,15 @@ export class CoursePlanService {
     const quotas = new Map(
       quotaRows.map((quota) => [String(quota.sectionId), quota]),
     );
+    const quotaHistoryRows = await this.catalog.quotaHistory([
+      ...new Set(sectionIds),
+    ]);
+    const quotaHistory = new Map<string, Document[]>();
+    for (const row of quotaHistoryRows) {
+      const group = quotaHistory.get(String(row.sectionId)) ?? [];
+      group.push(row);
+      quotaHistory.set(String(row.sectionId), group);
+    }
     const candidateSchedules = new Map<string, CandidateSchedule>();
     const candidates: SolverCandidate[] = [];
     const suppressedCalendarKeys = new Set(
@@ -1384,7 +1805,7 @@ export class CoursePlanService {
     let occurrenceCount = 0;
     for (const { canonical, course } of rawCandidates) {
       const id = String(canonical.bundle.bundleId);
-      const quota = latestQuotaScore(canonical, quotas);
+      const quota = historicalQuotaBundleScore(canonical, quotas, quotaHistory);
       const hasCreditBound =
         request.constraints.minCredits !== undefined ||
         request.constraints.maxCredits !== undefined;
@@ -1465,12 +1886,72 @@ export class CoursePlanService {
           this.settings.timezone,
         ),
         compactness: compactnessScore(metrics, horizon, this.settings.timezone),
+        instructorFit: instructorFitScore(
+          instructorNames(canonical),
+          request.constraints.preferredInstructorNames,
+        ),
         conflicts: [],
         dailyMinutes: metrics.dailyMinutes,
         weekDayKeys: metrics.weekDayKeys,
       };
       candidateSchedules.set(id, { canonical, metrics });
       candidates.push(candidate);
+    }
+    const fillerSchedules = new Map<string, FillerSchedule>();
+    for (const canonical of rawFillerCanonicals) {
+      const id = String(canonical.bundle.bundleId);
+      const quota = historicalQuotaBundleScore(canonical, quotas, quotaHistory);
+      if (
+        quota.closed ||
+        (!request.allowFullWaitlist && quota.full) ||
+        (request.unknownQuotaPolicy === "exclude" && quota.unknown)
+      )
+        continue;
+      if (
+        (request.constraints.maxCredits !== undefined ||
+          request.fill?.targetCredits !== undefined) &&
+        typeof canonical.course.credits !== "number"
+      )
+        continue;
+      const expanded = horizon
+        ? expandCourseBundle(
+            scheduleInput(canonical),
+            horizon.window,
+            this.settings.timezone,
+          )
+        : { items: [], partial: true };
+      occurrenceCount += expanded.items.length;
+      const metrics = scheduleMetrics(
+        expanded.items,
+        expanded.partial,
+        this.settings.timezone,
+      );
+      if (
+        hardMeetingViolation(
+          canonicalMeetings(canonical),
+          request.constraints,
+          horizon,
+        ) ||
+        violatesAggregateConstraints(metrics, request.constraints, horizon)
+      )
+        continue;
+      if ((await this.blockingConflicts(owner, [canonical])).length) continue;
+      fillerSchedules.set(id, {
+        canonical,
+        metrics,
+        quota,
+        timeFit: timeFitScore(
+          metrics.occurrences,
+          metrics.partial,
+          request.constraints.preferredWindows,
+          this.settings.timezone,
+        ),
+        compactness: compactnessScore(metrics, horizon, this.settings.timezone),
+        instructorFit: instructorFitScore(
+          instructorNames(canonical),
+          request.constraints.preferredInstructorNames,
+        ),
+      });
     }
     if (
       occurrenceCount >
@@ -1486,6 +1967,15 @@ export class CoursePlanService {
         "candidate_pool_too_large",
         400,
         "Candidate bundle pool is too large",
+      );
+    if (
+      candidates.length + fillerSchedules.size >
+      (this.settings.autoPlanMaxCandidateBundles ?? 600)
+    )
+      throw new PlanError(
+        "candidate_pool_too_large",
+        400,
+        "Combined desired and filler candidate pool is too large",
       );
     let conflictEdges = 0;
     for (let i = 0; i < candidates.length; i++) {
@@ -1533,8 +2023,6 @@ export class CoursePlanService {
       groups: normalizedRequest.groups,
       maxSelectedCourses: this.settings.autoPlanMaxSelectedCourses ?? 12,
     };
-    const deadline =
-      Date.now() + (this.settings.autoPlanSolverTimeoutMs ?? 8_000);
     const solve = (value: SolverInput) =>
       solveAutoPlan(
         value,
@@ -1631,6 +2119,7 @@ export class CoursePlanService {
       if (!nextOption.selectedIds.length) break;
       rawOptions.push(nextOption);
     }
+    let fillerSearchTimedOut = false;
     const options = rawOptions.map((option) => {
       const schedules = option.selectedIds
         .map((bundleId) => candidateSchedules.get(bundleId))
@@ -1654,6 +2143,7 @@ export class CoursePlanService {
           priority: candidate.priority,
           seatSafety: candidate.seatSafety,
           timeFit: candidate.timeFit,
+          instructorFit: candidate.instructorFit ?? 50,
         };
       });
       const scoreComponents = optionScoreComponents(
@@ -1674,13 +2164,6 @@ export class CoursePlanService {
         },
         0,
       );
-      const optionConflicts = detectConflicts(
-        occurrences.filter(
-          (item) => !suppressedCalendarKeys.has(item.calendarKey),
-        ),
-        this.settings.timezone,
-        100_000,
-      );
       const unselectedCourses = normalizedRequest.courses
         .filter((course) => !selectedCodes.has(course.courseCode))
         .map((course) => ({
@@ -1699,44 +2182,381 @@ export class CoursePlanService {
             item.status === "selected" && !selectedBundleIds.has(item.bundleId),
         )
         .map((item) => item.itemId);
+      const coreSelectedCodes = new Set(
+        schedules.map((schedule) => canonicalCourseCode(schedule.canonical)),
+      );
+      const maxFill = Math.min(
+        request.fill?.maxCourses ?? 0,
+        Math.max(
+          0,
+          (this.settings.autoPlanMaxSelectedCourses ?? 12) - schedules.length,
+        ),
+      );
+      const fillerCandidates = [...fillerSchedules.values()]
+        .filter(
+          (schedule) =>
+            !coreSelectedCodes.has(canonicalCourseCode(schedule.canonical)) &&
+            !document.items.some(
+              (item) =>
+                item.status === "selected" &&
+                item.courseId === schedule.canonical.course.courseId,
+            ),
+        )
+        .map((schedule) => ({
+          ...schedule,
+          credits: schedule.canonical.course.credits,
+          quality:
+            schedule.timeFit * 0.5 +
+            schedule.quota.score * 0.3 +
+            schedule.compactness * 0.2,
+        }));
+      let fillerStatus: "not_requested" | "completed" | "time_limited" =
+        "not_requested";
+      let selectedFillers: typeof fillerCandidates = [];
+      let fillerScore = 0;
+      let fillCreditShortfall: number | null = null;
+      if (request.fill && request.fill.maxCourses > 0) {
+        fillerStatus = "completed";
+        const target = request.fill.targetCredits;
+        const coreCredits = selectedCredits;
+        const coreBundleIds = new Set(option.selectedIds);
+        const coreOccurrences = schedules.flatMap(
+          (schedule) => schedule.metrics.occurrences,
+        );
+        const candidatesWithoutCoreConflicts = fillerCandidates.filter(
+          (candidate) =>
+            !coreBundleIds.has(String(candidate.canonical.bundle.bundleId)) &&
+            detectConflicts(
+              [
+                ...coreOccurrences.filter(
+                  (item) => !suppressedCalendarKeys.has(item.calendarKey),
+                ),
+                ...candidate.metrics.occurrences.filter(
+                  (item) => !suppressedCalendarKeys.has(item.calendarKey),
+                ),
+              ],
+              this.settings.timezone,
+              100_000,
+            ).blocking.length === 0,
+        );
+        const limit = maxFill;
+        const maxNodes = 100_000;
+        let nodes = 0;
+        let timedOut = false;
+        let best: typeof fillerCandidates = [];
+        const canonicalKey = (items: typeof fillerCandidates) =>
+          items
+            .map(
+              (item) =>
+                `${canonicalCourseCode(item.canonical)}:${item.canonical.bundle.bundleId}`,
+            )
+            .sort()
+            .join("\0");
+        const evaluate = (items: typeof fillerCandidates) => {
+          const credits = items.reduce<number | null>((sum, item) => {
+            if (sum === null || typeof item.credits !== "number") return null;
+            return sum + item.credits;
+          }, 0);
+          const totalCredits =
+            coreCredits === null || credits === null
+              ? null
+              : coreCredits + credits;
+          if (
+            request.constraints.maxCredits !== undefined &&
+            (totalCredits === null ||
+              totalCredits > request.constraints.maxCredits)
+          )
+            return;
+          const quality = items.length
+            ? items.reduce((sum, item) => sum + item.quality, 0) / items.length
+            : 0;
+          const better = () => {
+            if (!best.length && !items.length) return false;
+            if (target !== undefined) {
+              if (totalCredits === null) return false;
+              const candidateDistance = Math.abs(totalCredits - target);
+              const bestFillerCredits = best.reduce<number | null>(
+                (sum, item) => {
+                  if (sum === null || typeof item.credits !== "number")
+                    return null;
+                  return sum + item.credits;
+                },
+                0,
+              );
+              const bestCredits =
+                coreCredits === null || bestFillerCredits === null
+                  ? null
+                  : coreCredits + bestFillerCredits;
+              if (bestCredits === null) return true;
+              const bestDistance = Math.abs(bestCredits - target);
+              if (candidateDistance !== bestDistance)
+                return candidateDistance < bestDistance;
+              if (items.length !== best.length)
+                return items.length < best.length;
+            } else if (items.length !== best.length) {
+              return items.length > best.length;
+            }
+            const bestQuality = best.length
+              ? best.reduce((sum, item) => sum + item.quality, 0) / best.length
+              : 0;
+            return quality !== bestQuality
+              ? quality > bestQuality
+              : canonicalKey(items) < canonicalKey(best);
+          };
+          if (better()) best = [...items];
+        };
+        const search = (
+          start: number,
+          selected: typeof fillerCandidates,
+          credits: number,
+          occurrences: CalendarOccurrence[],
+        ) => {
+          nodes += 1;
+          if (nodes > maxNodes || Date.now() >= deadline) {
+            timedOut = true;
+            return;
+          }
+          evaluate(selected);
+          if (selected.length >= limit) return;
+          for (
+            let index = start;
+            index < candidatesWithoutCoreConflicts.length;
+            index++
+          ) {
+            const candidate = candidatesWithoutCoreConflicts[index]!;
+            if (
+              selected.some(
+                (item) =>
+                  String(item.canonical.course.courseId) ===
+                  String(candidate.canonical.course.courseId),
+              )
+            )
+              continue;
+            const nextCredits =
+              credits +
+              (typeof candidate.credits === "number" ? candidate.credits : 0);
+            if (
+              request.constraints.maxCredits !== undefined &&
+              coreCredits !== null &&
+              coreCredits + nextCredits > request.constraints.maxCredits
+            )
+              continue;
+            const nextOccurrences = [
+              ...occurrences,
+              ...candidate.metrics.occurrences.filter(
+                (item) => !suppressedCalendarKeys.has(item.calendarKey),
+              ),
+            ];
+            if (
+              detectConflicts(nextOccurrences, this.settings.timezone, 100_000)
+                .blocking.length
+            )
+              continue;
+            const combinedMetrics = scheduleMetrics(
+              nextOccurrences,
+              partial ||
+                selected.some((item) => item.metrics.partial) ||
+                candidate.metrics.partial,
+              this.settings.timezone,
+            );
+            const combinedMeetings = [
+              ...selectedCanonical.flatMap((item) => canonicalMeetings(item)),
+              ...selected.flatMap((item) => canonicalMeetings(item.canonical)),
+              ...canonicalMeetings(candidate.canonical),
+            ];
+            if (
+              violatesAggregateConstraints(
+                combinedMetrics,
+                request.constraints,
+                horizon,
+              ) ||
+              hardMeetingViolation(
+                combinedMeetings,
+                request.constraints,
+                horizon,
+              )
+            )
+              continue;
+            search(
+              index + 1,
+              [...selected, candidate],
+              nextCredits,
+              nextOccurrences,
+            );
+            if (timedOut) return;
+          }
+        };
+        search(0, [], 0, coreOccurrences);
+        selectedFillers = best;
+        if (timedOut) {
+          fillerStatus = "time_limited";
+          fillerSearchTimedOut = true;
+        }
+        fillerScore =
+          selectedFillers.reduce((sum, item) => sum + item.quality, 0) /
+          Math.max(1, selectedFillers.length);
+        if (target !== undefined && coreCredits !== null) {
+          const fillerCredits = selectedFillers.reduce<number | null>(
+            (sum, item) => {
+              if (sum === null || typeof item.credits !== "number") return null;
+              return sum + item.credits;
+            },
+            0,
+          );
+          if (fillerCredits !== null)
+            fillCreditShortfall = Math.max(
+              0,
+              target - coreCredits - fillerCredits,
+            );
+        }
+      }
+      const coreOccurrences = occurrences;
+      const fillerOccurrences = selectedFillers.flatMap(
+        (item) => item.metrics.occurrences,
+      );
+      const completeOccurrences = [...coreOccurrences, ...fillerOccurrences];
+      const completeMetrics = scheduleMetrics(
+        completeOccurrences,
+        partial || selectedFillers.some((item) => item.metrics.partial),
+        this.settings.timezone,
+      );
+      const fillerCredits = selectedFillers.reduce<number | null>(
+        (sum, item) => {
+          if (sum === null || typeof item.credits !== "number") return null;
+          return sum + item.credits;
+        },
+        0,
+      );
+      const finalCredits =
+        selectedCredits === null || fillerCredits === null
+          ? null
+          : selectedCredits + fillerCredits;
+      const completedConflicts = detectConflicts(
+        completeOccurrences.filter(
+          (item) => !suppressedCalendarKeys.has(item.calendarKey),
+        ),
+        this.settings.timezone,
+        100_000,
+      );
       return {
         selected: schedules.map((schedule) =>
           optionCourseResponse(schedule.canonical),
         ),
-        selectedBundleIds: option.selectedIds,
+        fillers: selectedFillers.map((item) => ({
+          ...optionCourseResponse(item.canonical),
+          status: "suggested" as const,
+        })),
+        selectedBundleIds: [
+          ...option.selectedIds,
+          ...selectedFillers.map((item) =>
+            String(item.canonical.bundle.bundleId),
+          ),
+        ],
         score: optionScore(normalizedRequest, scoreComponents),
         scoreComponents,
-        occurrences,
+        occurrences: completeOccurrences,
         representativeWeek: optionScheduleSummary(
-          metrics,
+          completeMetrics,
           horizon,
           this.settings.timezone,
         ).representativeWeek,
-        credits: selectedCredits,
+        credits: finalCredits,
         campusDays: optionScheduleSummary(
-          metrics,
+          completeMetrics,
           horizon,
           this.settings.timezone,
         ).campusDays,
         idleMinutes: optionScheduleSummary(
-          metrics,
+          completeMetrics,
           horizon,
           this.settings.timezone,
         ).idleMinutes,
         conflictCoverage: partial
           ? ("partial" as const)
           : ("complete" as const),
-        conflicts: optionConflicts,
-        quotaBottlenecks: quotaBottlenecks(selectedCanonical, quotas),
+        conflicts: completedConflicts,
+        quotaBottlenecks: [
+          ...option.selectedIds,
+          ...selectedFillers.map((item) =>
+            String(item.canonical.bundle.bundleId),
+          ),
+        ].flatMap((bundleId) => {
+          const canonical = canonicalById.get(bundleId);
+          return canonical
+            ? canonical.sections.map((section) => {
+                const latest = quotas.get(String(section.sectionId));
+                const risk = historicalQuotaSectionScore(
+                  section,
+                  latest,
+                  quotaHistory.get(String(section.sectionId)) ?? [],
+                );
+                const trend = calculateQuotaTrend(
+                  (quotaHistory.get(String(section.sectionId)) ??
+                    []) as unknown as import("../domain/quota.js").QuotaObservationLike[],
+                  "14d",
+                  evaluationNow,
+                );
+                const difficulty = enrollmentDifficulty(
+                  latest as unknown as
+                    | import("../domain/quota.js").QuotaObservationLike
+                    | undefined,
+                  trend,
+                );
+                return {
+                  sectionId: section.sectionId,
+                  snapshotId: latest?.snapshotId ?? null,
+                  observedAt: latest?.observedAt ?? null,
+                  isStale: quotaIsStale(latest, this.settings, evaluationNow),
+                  score: risk.score,
+                  remaining:
+                    effectiveRemaining(latest ?? {}) === null
+                      ? null
+                      : Math.max(0, effectiveRemaining(latest ?? {})!),
+                  capacity:
+                    typeof latest?.capacity === "number"
+                      ? latest.capacity
+                      : null,
+                  waitlisted:
+                    typeof latest?.waitlisted === "number"
+                      ? Math.max(0, latest.waitlisted)
+                      : null,
+                  unknown: risk.unknown,
+                  dataQuality: [
+                    ...risk.dataQuality,
+                    ...(quotaIsStale(latest, this.settings, evaluationNow)
+                      ? ["quota_stale"]
+                      : []),
+                  ],
+                  trend,
+                  difficulty,
+                };
+              })
+            : [];
+        }),
         unselectedCourses,
         replacesItemIds,
-        fillerStatus: "not_requested" as const,
+        fillerStatus,
+        fillerScore,
+        fillCreditShortfall,
       };
     });
+    if (fillerSearchTimedOut) searchStatus = "time_limited";
+    if (fillerPool.commonCore && this.commonCore) {
+      const currentCommonCore = await this.commonCore.active();
+      if (
+        currentCommonCore.catalog.catalogVersion !==
+          fillerPool.commonCore.catalogVersion ||
+        currentCommonCore.revision !== fillerPool.commonCore.stateRevision
+      )
+        throw new PlanError(
+          "stale_recommendation",
+          409,
+          "Common Core classification changed; regenerate the recommendation",
+        );
+    }
     options.sort((first, second) => {
       if (normalizedRequest.mode === "coverage_first") {
-        const countDifference =
-          second.selectedBundleIds.length - first.selectedBundleIds.length;
+        const countDifference = second.selected.length - first.selected.length;
         if (countDifference) return countDifference;
         const priorityDifference =
           second.scoreComponents.coverage - first.scoreComponents.coverage;
@@ -1745,10 +2565,94 @@ export class CoursePlanService {
         return second.score - first.score;
       }
       if (second.score !== first.score) return second.score - first.score;
+      if (second.fillerScore !== first.fillerScore)
+        return second.fillerScore - first.fillerScore;
       return first.selectedBundleIds
         .join("\u0000")
         .localeCompare(second.selectedBundleIds.join("\u0000"));
     });
+    if (options.length) {
+      const currentDocument = await this.document(owner, id);
+      if (currentDocument.revision !== document.revision)
+        throw new PlanError(
+          "stale_recommendation",
+          409,
+          "The plan changed; regenerate the recommendation",
+        );
+      const currentTerm = await this.catalog.activeTerm(document.termCode);
+      if (
+        currentTerm.activeImportBatchId !== term.activeImportBatchId ||
+        (currentTerm.importFence ?? null) !== (term.importFence ?? null)
+      )
+        throw new PlanError(
+          "stale_recommendation",
+          409,
+          "Academic data changed; regenerate the recommendation",
+        );
+
+      const selectedSectionIds = [
+        ...new Set(
+          options.flatMap((option) =>
+            option.selectedBundleIds.flatMap(
+              (bundleId) =>
+                canonicalById
+                  .get(bundleId)
+                  ?.sections.map((section) => String(section.sectionId)) ?? [],
+            ),
+          ),
+        ),
+      ];
+      if (selectedSectionIds.length) {
+        const currentQuotas = new Map(
+          (await this.catalog.latestQuotas(selectedSectionIds)).map((row) => [
+            String(row.sectionId),
+            row,
+          ]),
+        );
+        const currentHistory = new Map<string, Document[]>();
+        for (const row of await this.catalog.quotaHistory(selectedSectionIds)) {
+          const entries = currentHistory.get(String(row.sectionId)) ?? [];
+          entries.push(row);
+          currentHistory.set(String(row.sectionId), entries);
+        }
+        for (const sectionId of selectedSectionIds) {
+          const initialSnapshot = quotas.get(sectionId)?.snapshotId ?? null;
+          const currentSnapshot =
+            currentQuotas.get(sectionId)?.snapshotId ?? null;
+          const initialTrend = quotaRiskObservationIds(
+            quotas.get(sectionId),
+            quotaHistory.get(sectionId) ?? [],
+          );
+          const currentTrend = quotaRiskObservationIds(
+            currentQuotas.get(sectionId),
+            currentHistory.get(sectionId) ?? [],
+          );
+          if (
+            initialSnapshot !== currentSnapshot ||
+            JSON.stringify(initialTrend) !== JSON.stringify(currentTrend)
+          )
+            throw new PlanError(
+              "stale_recommendation",
+              409,
+              "Quota data changed; regenerate the recommendation",
+            );
+        }
+      }
+
+      if (fillerPool.commonCore && this.commonCore) {
+        const currentCommonCore = await this.commonCore.active();
+        if (
+          currentCommonCore.catalog.catalogVersion !==
+            fillerPool.commonCore.catalogVersion ||
+          currentCommonCore.revision !== fillerPool.commonCore.stateRevision
+        )
+          throw new PlanError(
+            "stale_recommendation",
+            409,
+            "Common Core classification changed; regenerate the recommendation",
+          );
+      }
+    }
     const normalizedHash = requestHash(normalizedRequest);
     const expiresAt =
       (this.settings.now?.().getTime() ?? Date.now()) +
@@ -1766,9 +2670,48 @@ export class CoursePlanService {
         selectedBundleIds: option.selectedBundleIds,
         quotaSnapshotIds: quotaSnapshotMap(
           option.selectedBundleIds
-            .map((bundleId) => candidateSchedules.get(bundleId)?.canonical)
+            .map((bundleId) => canonicalById.get(bundleId))
             .filter((value): value is CanonicalBundle => Boolean(value)),
           quotas,
+        ),
+        fillerBundleIds: option.selectedBundleIds.filter((bundleId) =>
+          fillerSchedules.has(bundleId),
+        ),
+        quotaTrendObservationIds: Object.fromEntries(
+          [
+            ...new Set(
+              option.selectedBundleIds.flatMap(
+                (bundleId) =>
+                  canonicalById
+                    .get(bundleId)
+                    ?.sections.map((section) => String(section.sectionId)) ??
+                  [],
+              ),
+            ),
+          ].map((sectionId) => [
+            sectionId,
+            quotaRiskObservationIds(
+              quotas.get(sectionId),
+              quotaHistory.get(sectionId) ?? [],
+            ),
+          ]),
+        ),
+        commonCore: fillerPool.commonCore,
+        quotaStale: Object.fromEntries(
+          [
+            ...new Set(
+              option.selectedBundleIds.flatMap(
+                (bundleId) =>
+                  canonicalById
+                    .get(bundleId)
+                    ?.sections.map((section) => String(section.sectionId)) ??
+                  [],
+              ),
+            ),
+          ].map((sectionId) => [
+            sectionId,
+            quotaIsStale(quotas.get(sectionId), this.settings, evaluationNow),
+          ]),
         ),
         requestHash: normalizedHash,
         request: normalizedRequest,
@@ -1802,8 +2745,13 @@ export class CoursePlanService {
         importBatchId: term.activeImportBatchId,
         importFence: term.importFence ?? null,
       },
+      commonCore: fillerPool.commonCore,
+      fillDiagnostics: fillerPool.diagnostics,
       normalizedRequest,
-      scoreVersion: "auto-plan-score-v1-phase7-current-quota",
+      scoreVersion:
+        normalizedRequest.mode === "custom"
+          ? "auto-plan-score-v2-custom-phase8"
+          : "auto-plan-score-v2-quota-history-phase8",
       options: tokenizedOptions,
       diagnostics:
         diagnostics.length || tokenizedOptions.length
@@ -2003,6 +2951,62 @@ export class CoursePlanService {
         400,
         "Invalid auto-plan option token",
       );
+    const fillerBundleIds = new Set(token.fillerBundleIds ?? []);
+    if (
+      [...fillerBundleIds].some(
+        (bundleId) => !token.selectedBundleIds.includes(bundleId),
+      )
+    )
+      throw new PlanError(
+        "invalid_request",
+        400,
+        "Invalid auto-plan option token",
+      );
+    let currentFillerPool: Awaited<
+      ReturnType<CoursePlanService["fillerCanonicals"]>
+    >;
+    try {
+      currentFillerPool = await this.fillerCanonicals(
+        term,
+        normalized,
+        new Set(normalized.courses.map((course) => course.courseCode)),
+      );
+    } catch (error) {
+      if (
+        token.commonCore &&
+        error instanceof PlanError &&
+        (error.code === "common_core_unavailable" ||
+          error.code === "invalid_request")
+      )
+        throw new PlanError(
+          "stale_recommendation",
+          409,
+          "Common Core classification changed; regenerate the recommendation",
+        );
+      throw error;
+    }
+    if (
+      JSON.stringify(currentFillerPool.commonCore) !==
+      JSON.stringify(token.commonCore ?? null)
+    )
+      throw new PlanError(
+        "stale_recommendation",
+        409,
+        "Common Core classification changed; regenerate the recommendation",
+      );
+    const allowedFillerBundles = new Set(
+      currentFillerPool.canonicals.map((item) => String(item.bundle.bundleId)),
+    );
+    if (
+      [...fillerBundleIds].some(
+        (bundleId) => !allowedFillerBundles.has(bundleId),
+      )
+    )
+      throw new PlanError(
+        "stale_recommendation",
+        409,
+        "A filler course is no longer in the selected pool",
+      );
     const uniqueBundles = new Set(token.selectedBundleIds);
     if (uniqueBundles.size !== token.selectedBundleIds.length)
       throw new PlanError(
@@ -2088,7 +3092,10 @@ export class CoursePlanService {
           );
       }
     }
-    if (!canonical.length)
+    const desiredCanonical = canonical.filter(
+      (item) => !fillerBundleIds.has(String(item.bundle.bundleId)),
+    );
+    if (!desiredCanonical.length)
       throw new PlanError(
         "stale_recommendation",
         409,
@@ -2100,14 +3107,59 @@ export class CoursePlanService {
         409,
         "The option exceeds the selected-course limit",
       );
+    if (fillerBundleIds.size > (normalized.fill?.maxCourses ?? 0))
+      throw new PlanError(
+        "stale_recommendation",
+        409,
+        "The option exceeds the requested filler limit",
+      );
     for (const item of canonical) {
-      if (!requestedCourses.has(canonicalCourseCode(item)))
+      const code = canonicalCourseCode(item);
+      if (
+        !requestedCourses.has(code) &&
+        !fillerBundleIds.has(String(item.bundle.bundleId))
+      )
         throw new PlanError(
           "stale_recommendation",
           409,
           "The option contains an unrequested course",
         );
-      const course = requestedCourses.get(canonicalCourseCode(item))!;
+      const course = requestedCourses.get(code);
+      if (!course) {
+        if (
+          document.items.some(
+            (existing) =>
+              existing.status === "selected" &&
+              existing.courseId === item.course.courseId,
+          )
+        )
+          throw new PlanError(
+            "stale_recommendation",
+            409,
+            "A filler course is already selected in this plan",
+          );
+        if (
+          normalized.fill?.minCredits !== undefined &&
+          (typeof item.course.credits !== "number" ||
+            item.course.credits < normalized.fill.minCredits)
+        )
+          throw new PlanError(
+            "stale_recommendation",
+            409,
+            "A filler course no longer satisfies its minimum credit filter",
+          );
+        if (
+          normalized.fill?.maxCredits !== undefined &&
+          (typeof item.course.credits !== "number" ||
+            item.course.credits > normalized.fill.maxCredits)
+        )
+          throw new PlanError(
+            "stale_recommendation",
+            409,
+            "A filler course no longer satisfies its maximum credit filter",
+          );
+        continue;
+      }
       if (
         course.academicCareer !== undefined &&
         item.offering.academicCareer !== course.academicCareer
@@ -2190,6 +3242,14 @@ export class CoursePlanService {
         409,
         temporalViolation ?? aggregateViolation!,
       );
+    const coreCredits = desiredCanonical.reduce<number | null>(
+      (total, item) => {
+        if (total === null) return null;
+        const value = item.course.credits;
+        return typeof value === "number" ? total + value : null;
+      },
+      0,
+    );
     const credits = canonical.reduce<number | null>((total, item) => {
       if (total === null) return null;
       const value = item.course.credits;
@@ -2197,7 +3257,8 @@ export class CoursePlanService {
     }, 0);
     if (
       (normalized.constraints.minCredits !== undefined &&
-        (credits === null || credits < normalized.constraints.minCredits)) ||
+        (coreCredits === null ||
+          coreCredits < normalized.constraints.minCredits)) ||
       (normalized.constraints.maxCredits !== undefined &&
         (credits === null || credits > normalized.constraints.maxCredits))
     )
@@ -2224,6 +3285,15 @@ export class CoursePlanService {
     const quotas = new Map(
       quotaRows.map((quota) => [String(quota.sectionId), quota]),
     );
+    const historyRows = await this.catalog.quotaHistoryForSections([
+      ...sectionIds,
+    ]);
+    const histories = new Map<string, Document[]>();
+    for (const row of historyRows) {
+      const entries = histories.get(String(row.sectionId)) ?? [];
+      entries.push(row);
+      histories.set(String(row.sectionId), entries);
+    }
     for (const sectionId of sectionIds) {
       const expected = token.quotaSnapshotIds[sectionId] ?? null;
       const actual = quotas.get(sectionId)?.snapshotId ?? null;
@@ -2232,6 +3302,27 @@ export class CoursePlanService {
           "stale_recommendation",
           409,
           "Quota data changed; regenerate the recommendation",
+        );
+      const expectedTrend = token.quotaTrendObservationIds?.[sectionId] ?? [];
+      const actualTrend = quotaRiskObservationIds(
+        quotas.get(sectionId),
+        histories.get(sectionId) ?? [],
+      );
+      if (JSON.stringify(expectedTrend) !== JSON.stringify(actualTrend))
+        throw new PlanError(
+          "stale_recommendation",
+          409,
+          "Quota history changed; regenerate the recommendation",
+        );
+      const expectedStale = token.quotaStale?.[sectionId];
+      if (
+        expectedStale !== undefined &&
+        expectedStale !== quotaIsStale(quotas.get(sectionId), this.settings)
+      )
+        throw new PlanError(
+          "stale_recommendation",
+          409,
+          "Quota freshness changed; regenerate the recommendation",
         );
       const quota = quotas.get(sectionId);
       const section = canonical

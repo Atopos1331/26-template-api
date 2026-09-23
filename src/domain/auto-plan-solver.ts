@@ -11,6 +11,7 @@ export type SolverCandidate = {
   seatSafety: number;
   timeFit: number;
   compactness: number;
+  instructorFit?: number;
   conflicts: string[];
   dailyMinutes?: Record<string, number>;
   weekDayKeys?: string[];
@@ -58,6 +59,7 @@ export function autoPlanCandidateObjective(
   const seat = scoreBasisPoints(candidate.seatSafety);
   const time = scoreBasisPoints(candidate.timeFit);
   const compactness = scoreBasisPoints(candidate.compactness);
+  const instructor = scoreBasisPoints(candidate.instructorFit ?? 50);
   if (request.mode === "coverage_first") {
     const maxPriority = courseCount * 5;
     const maxQuality = maxPriority * 1_000_000;
@@ -69,14 +71,35 @@ export function autoPlanCandidateObjective(
   }
   const weights =
     request.mode === "seat_safety"
-      ? { coverage: 35, seatSafety: 45, timeFit: 15, compactness: 5 }
-      : { coverage: 45, seatSafety: 25, timeFit: 20, compactness: 10 };
+      ? {
+          coverage: 35,
+          seatSafety: 45,
+          timeFit: 15,
+          compactness: 5,
+          instructorFit: 0,
+        }
+      : request.mode === "balanced"
+        ? {
+            coverage: 45,
+            seatSafety: 25,
+            timeFit: 20,
+            compactness: 10,
+            instructorFit: 0,
+          }
+        : (request.weights ?? {
+            coverage: 45,
+            seatSafety: 25,
+            timeFit: 20,
+            compactness: 10,
+            instructorFit: 0,
+          });
   return (
     candidate.priority *
     (weights.coverage * 100 +
       seat * weights.seatSafety +
       time * weights.timeFit +
-      compactness * weights.compactness)
+      compactness * weights.compactness +
+      instructor * (weights.instructorFit ?? 0))
   );
 }
 

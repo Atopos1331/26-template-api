@@ -15,6 +15,7 @@ import {
   UstQuotaSource,
 } from "../src/providers/ust-quota.js";
 import {
+  enqueueQuotaRefreshJob,
   recordQuotaFailure,
   saveQuotaObservation,
 } from "../src/repositories/quotas.js";
@@ -607,6 +608,174 @@ test("fresh quota stays cached; concurrent stale reads enqueue one durable job",
   }
 });
 
+test("watched-section scan expands courses, skips retired sections, and coalesces jobs", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    const clock = new Date("2026-09-23T10:20:00.000Z");
+    await db.collection("latestQuotas").insertOne({
+      source: ACADEMIC_SOURCE,
+      sectionId,
+      snapshotId: "old",
+      capacity: 120,
+      enrolled: 120,
+      remaining: 0,
+      waitlisted: 0,
+      open: true,
+      observedAt: timestamp,
+      nextRefreshAt: timestamp,
+    });
+    await db.collection("classSections").insertOne({
+      source: ACADEMIC_SOURCE,
+      termCode,
+      importBatchId: "active",
+      retiredAt: "2026-09-23T09:00:00.000Z",
+      sectionId: "retired-section",
+      offeringId,
+      classNbr: "99999",
+    });
+    const watch = {
+      ownerUsername: "alice",
+      termCode,
+      notificationPreference: "none",
+      baselineRecordedAt: timestamp,
+      baselineBySection: {},
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await db.collection("courseWatches").insertMany([
+      {
+        ...watch,
+        watchId: "course-watch",
+        targetType: "course",
+        targetId: "COMP2611",
+      },
+      {
+        ...watch,
+        watchId: "section-watch",
+        targetType: "section",
+        targetId: sectionId,
+      },
+      {
+        ...watch,
+        watchId: "retired-watch",
+        targetType: "section",
+        targetId: "retired-section",
+      },
+    ]);
+    const source = new FixtureQuotaSource(
+      new Map([[sectionId, observation(clock.toISOString(), 12)]]),
+    );
+    const runner = new AcademicRefreshWorker(db, source, {
+      maxAttempts: 3,
+      leaseSeconds: 60,
+      failureCooldownSeconds: 3600,
+      quotaMinIntervalSeconds: 300,
+      quotaTtlSeconds: 900,
+      maxWatchedJobsPerPoll: 10,
+      now: () => clock,
+    });
+    expect(await runner.scanWatchedSections()).toBe(1);
+    expect(await runner.scanWatchedSections()).toBe(0);
+    expect(await db.collection("refreshJobs").countDocuments()).toBe(1);
+    expect((await db.collection("refreshJobs").findOne({}))?.targetId).toBe(
+      sectionId,
+    );
+    expect(await runner.runOne()).toBe(true);
+    expect(source.calls).toHaveLength(1);
+  } finally {
+    await app.close();
+  }
+});
+
+test("provider throttle survives a failed refresh", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    const clock = new Date("2026-09-23T10:20:00.000Z");
+    const secondSectionId = `${offeringId}:99999`;
+    await enqueueQuotaRefreshJob(
+      db,
+      ACADEMIC_SOURCE,
+      termCode,
+      sectionId,
+      clock,
+    );
+    await enqueueQuotaRefreshJob(
+      db,
+      ACADEMIC_SOURCE,
+      termCode,
+      secondSectionId,
+      clock,
+    );
+    let calls = 0;
+    const source: QuotaSource = {
+      async fetchQuota() {
+        calls += 1;
+        throw new QuotaProviderError(true, "TEMPORARY");
+      },
+    };
+    const runner = new AcademicRefreshWorker(db, source, {
+      maxAttempts: 3,
+      leaseSeconds: 60,
+      failureCooldownSeconds: 3600,
+      quotaMinIntervalSeconds: 300,
+      now: () => clock,
+    });
+    expect(await runner.runOne()).toBe(true);
+    expect(await runner.runOne()).toBe(true);
+    expect(calls).toBe(1);
+    expect(
+      (
+        await db.collection("refreshLeases").findOne({
+          leaseKey: `${ACADEMIC_SOURCE}:quota-provider`,
+        })
+      )?.nextAllowedAt,
+    ).toEqual(new Date("2026-09-23T10:25:00.000Z"));
+  } finally {
+    await app.close();
+  }
+});
+
+test("quota projection processes observations in observed-time order", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    const first = "2026-09-23T10:00:00.000Z";
+    const second = "2026-09-23T10:01:00.000Z";
+    await saveQuotaObservation(db, termCode, observation(first, 0), 300);
+    await saveQuotaObservation(db, termCode, observation(second, 20), 300);
+    const runner = new AcademicRefreshWorker(
+      db,
+      new FixtureQuotaSource(new Map()),
+      {
+        maxAttempts: 3,
+        leaseSeconds: 60,
+        failureCooldownSeconds: 3600,
+        quotaMinIntervalSeconds: 300,
+        now: () => new Date("2026-09-23T10:30:00.000Z"),
+      },
+    );
+    await Promise.all([runner.projectOne(), runner.projectOne()]);
+    for (let attempt = 0; attempt < 4; attempt++)
+      if (!(await runner.projectOne())) break;
+    expect(
+      await db.collection("quotaSnapshots").countDocuments({
+        projectionStatus: "done",
+      }),
+    ).toBe(2);
+    expect(
+      (await db.collection("watchProjectionCheckpoints").findOne({ sectionId }))
+        ?.lastObservedAt,
+    ).toBe(second);
+  } finally {
+    await app.close();
+  }
+});
+
 test("cold quota failure is cooled down; retryable failure recovers", async () => {
   const app = await buildApp();
   try {
@@ -646,7 +815,7 @@ test("cold quota failure is cooled down; retryable failure recovers", async () =
           .findOne({ status: "retryable_failed" })
       )?.lastErrorCode,
     ).toBe("TEMPORARY");
-    clock = new Date("2026-09-23T11:22:00.000Z");
+    clock = new Date("2026-09-23T11:27:00.000Z");
     await runner.runOne();
     expect((await api.getQuota(sectionId)).data.remaining).toBe(9);
   } finally {
@@ -670,6 +839,10 @@ test("failed refresh preserves a stale quota and suppresses repeat jobs", async 
     expect(fallback.data.remaining).toBe(20);
     expect(fallback.meta.freshness.isStale).toBe(true);
     expect(fallback.meta.freshness.state).toBe("stale");
+    expect(
+      (await db.collection("latestQuotas").findOne({ sectionId }))
+        ?.lastAttemptedAt,
+    ).toBe(clock.toISOString());
     expect(await db.collection("refreshJobs").countDocuments()).toBe(1);
   } finally {
     await app.close();
@@ -731,6 +904,11 @@ test("expired worker claim cannot complete after a newer worker succeeds", async
       new Map([[sectionId, observation(clock.toISOString(), 7)]]),
     );
     await worker(db, fast, () => clock).runOne();
+    expect(
+      (await db.collection("latestQuotas").findOne({ sectionId }))?.remaining,
+    ).toBeUndefined();
+    clock = new Date("2026-09-23T10:26:00.000Z");
+    await worker(db, fast, () => clock).runOne();
     release?.(observation("2026-09-23T10:23:00.000Z", 99));
     await first;
     expect(
@@ -739,7 +917,7 @@ test("expired worker claim cannot complete after a newer worker succeeds", async
     expect(
       (await db.collection("refreshJobs").findOne({ targetId: sectionId }))
         ?.claimGeneration,
-    ).toBe(2);
+    ).toBe(3);
   } finally {
     await app.close();
   }

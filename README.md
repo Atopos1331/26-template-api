@@ -51,6 +51,20 @@ Use `bun run worker:academic-refresh --once` to process at most one job.
 The worker is started as a separate Compose service. Outside Compose, start it
 with the command above. Failed quota fetches back
 off; permanent failures have a cooldown. There is no public refresh endpoint.
+`GET /sections/:sectionId/quota/trends` returns bounded historical observations,
+deterministic trend slopes, and the versioned enrollment-difficulty heuristic.
+
+Authenticated users can create term-scoped course or section watches with
+`POST /courses/:courseId/watch` and `POST /sections/:sectionId/watch`. Watch
+records are listed at `GET /watching`; in-app notifications are listed and
+acknowledged at `GET /watching/notifications` and
+`PATCH /watching/notifications/:notificationId`. The worker expands course
+watches, skips retired sections, applies the provider-wide quota throttle, and
+projects observations asynchronously.
+
+`GET /common-core/presets?admissionYear=YYYY&termCode=YYSS` reads the active,
+operator-loaded Common Core classification. It reports source/version metadata
+and distinct offered course-code counts; it does not claim degree eligibility.
 
 ## Environment
 
@@ -77,10 +91,12 @@ development setup and uses a process-local signing key by default.
 | `ACADEMIC_CURRENT_TERM_CODE` | Optional actual ongoing UST term code (for example `2610`); only controls `isCurrent` and term ordering. |
 | `ACADEMIC_QUOTA_TTL_SECONDS` | Quota freshness lifetime, default 900. |
 | `ACADEMIC_QUOTA_MIN_INTERVAL_SECONDS` | Minimum time between successful quota refreshes, default 300. |
+| `ACADEMIC_QUOTA_MAX_JOBS_PER_POLL` | Maximum overdue watched sections enqueued by one worker scan, default 100. |
 | `REFRESH_FAILURE_COOLDOWN_SECONDS` | Permanent-failure cooldown and retry backoff cap, default 3600. |
 | `REFRESH_MAX_ATTEMPTS` | Maximum worker attempts per quota job, default 3. |
 | `REFRESH_LEASE_SECONDS` | Worker claim and resource lease lifetime, default 60. |
 | `ACADEMIC_PROVIDER_BASE_URL` | HKUST Class Schedule base URL for the worker. |
+| `COMMON_CORE_MAX_AGE_DAYS` | Maximum age of the active Common Core verification, default 365. |
 | `API_PORT` | Host port for Compose, default 3000. |
 
 ## Scripts

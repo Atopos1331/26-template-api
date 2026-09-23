@@ -6,6 +6,7 @@ import { validate } from "./contract.ts";
 import { BoundedClient } from "./fetch/client.ts";
 import type { VerifiedBindings } from "./normalize/bundle.ts";
 import { normalize } from "./normalize/index.ts";
+import { loadCommonCoreCatalog } from "./output/common-core-loader.ts";
 import { loadBatch, rollbackBatch } from "./output/mongo-loader.ts";
 import { fetchTerm, type RawImport } from "./providers/ust-schedule.ts";
 
@@ -178,6 +179,16 @@ async function main(): Promise<void> {
       ),
     );
     console.log(JSON.stringify({ activeImportBatchId: batchId }));
+    return;
+  }
+  if (command === "common-core-load") {
+    const input = option("input");
+    if (!input) throw new Error("INPUT_REQUIRED");
+    const data = await readJson(input);
+    const result = await withDatabase((connection) =>
+      loadCommonCoreCatalog(connection.db(databaseName()), data),
+    );
+    console.log(JSON.stringify(result));
     return;
   }
   throw new Error("COMMAND_UNKNOWN");

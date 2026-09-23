@@ -520,6 +520,9 @@ test("recommendations omit an unavailable quota component from the score denomin
     });
     expect(result.statusCode).toBe(200);
     expect(result.json().data.items[0].score).toBe(85);
+    expect(result.json().data.meta.scoreVersion).toBe(
+      "recommendation-score-v2-quota-history-phase8",
+    );
   } finally {
     await app.close();
   }

@@ -102,17 +102,64 @@ export const BundleSchema = Type.Object(
   },
   { additionalProperties: true },
 );
-export const QuotaSchema = Type.Object({
-  snapshotId: Type.String(),
-  sectionId: Type.String(),
-  capacity: Type.Union([Type.Number(), Type.Null()]),
-  enrolled: Type.Union([Type.Number(), Type.Null()]),
-  remaining: Type.Union([Type.Number(), Type.Null()]),
-  waitlisted: Type.Union([Type.Number(), Type.Null()]),
-  reserveCapacity: Type.Union([Type.Number(), Type.Null()]),
-  open: Type.Union([Type.Boolean(), Type.Null()]),
-  observedAt: Type.String(),
-});
+export const QuotaSchema = Type.Object(
+  {
+    snapshotId: Type.Union([Type.String(), Type.Null()]),
+    sectionId: Type.String(),
+    capacity: Type.Union([Type.Number(), Type.Null()]),
+    enrolled: Type.Union([Type.Number(), Type.Null()]),
+    remaining: Type.Union([Type.Number(), Type.Null()]),
+    waitlisted: Type.Union([Type.Number(), Type.Null()]),
+    reserveCapacity: Type.Union([Type.Number(), Type.Null()]),
+    open: Type.Union([Type.Boolean(), Type.Null()]),
+    observedAt: Type.Union([Type.String(), Type.Null()]),
+  },
+  { additionalProperties: true },
+);
+export const QuotaTrendSchema = Type.Object(
+  {
+    window: Type.Union([
+      Type.Literal("7d"),
+      Type.Literal("14d"),
+      Type.Literal("term"),
+    ]),
+    status: Type.Union([
+      Type.Literal("ready"),
+      Type.Literal("insufficient_data"),
+    ]),
+    observationCount: Type.Number(),
+    firstObservedAt: Type.Union([Type.String(), Type.Null()]),
+    lastObservedAt: Type.Union([Type.String(), Type.Null()]),
+    firstRemaining: Type.Union([Type.Number(), Type.Null()]),
+    lastRemaining: Type.Union([Type.Number(), Type.Null()]),
+    remainingSlopePerDay: Type.Union([Type.Number(), Type.Null()]),
+    remainingDirection: Type.String(),
+    firstWaitlisted: Type.Union([Type.Number(), Type.Null()]),
+    lastWaitlisted: Type.Union([Type.Number(), Type.Null()]),
+    waitlistSlopePerDay: Type.Union([Type.Number(), Type.Null()]),
+    waitlistDirection: Type.String(),
+    dataQuality: Type.Array(Type.String()),
+  },
+  { additionalProperties: true },
+);
+export const QuotaTrendResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        sectionId: Type.String(),
+        latest: Type.Union([QuotaSchema, Type.Null()]),
+        observations: Type.Array(QuotaSchema),
+        trend: QuotaTrendSchema,
+        difficulty: Type.Object({}, { additionalProperties: true }),
+        freshness: FreshnessSchema,
+      },
+      { additionalProperties: true },
+    ),
+    page: PageSchema,
+    meta: AcademicMeta,
+  },
+  { additionalProperties: true },
+);
 
 export const academicResponses = {
   400: AcademicErrorResponse,

@@ -18,6 +18,7 @@ export type ActiveTerm = Document & {
 };
 
 export class CourseCatalogRepository {
+  private readonly db: Db;
   private readonly terms: Collection<Document>;
   private readonly courses: Collection<Document>;
   private readonly offerings: Collection<Document>;
@@ -26,6 +27,7 @@ export class CourseCatalogRepository {
   private readonly quotas: Collection<Document>;
 
   constructor(db: Db) {
+    this.db = db;
     this.terms = db.collection("academicTerms");
     this.courses = db.collection("courses");
     this.offerings = db.collection("courseOfferings");
@@ -232,6 +234,78 @@ export class CourseCatalogRepository {
     return this.quotas
       .find({ source: ACADEMIC_SOURCE, sectionId: { $in: sectionIds } })
       .toArray();
+  }
+
+  async quotaHistory(sectionIds: string[]) {
+    if (!sectionIds.length) return [];
+    return this.db
+      .collection("quotaSnapshots")
+      .find({ source: ACADEMIC_SOURCE, sectionId: { $in: sectionIds } })
+      .sort({ observedAt: 1, snapshotId: 1 })
+      .limit(50_000)
+      .toArray();
+  }
+
+  async quotaHistoryForSections(sectionIds: string[]) {
+    if (!sectionIds.length) return [];
+    return this.db
+      .collection("quotaSnapshots")
+      .find({ source: ACADEMIC_SOURCE, sectionId: { $in: sectionIds } })
+      .sort({ observedAt: 1, snapshotId: 1 })
+      .limit(50_000)
+      .toArray();
+  }
+
+  async fillOfferings(
+    term: ActiveTerm,
+    input: {
+      courseCodes: string[];
+      subjects: string[];
+      levels: number[];
+      academicCareer?: string;
+    },
+  ) {
+    const key = this.key(term);
+    const seed: Document[] = [];
+    if (input.courseCodes.length || input.subjects.length) {
+      const courses = await this.courses
+        .find({
+          ...key,
+          $or: [
+            ...(input.courseCodes.length
+              ? [{ courseCode: { $in: input.courseCodes } }]
+              : []),
+            ...(input.subjects.length
+              ? [{ subject: { $in: input.subjects } }]
+              : []),
+          ],
+        })
+        .sort({ courseCode: 1, courseId: 1 })
+        .limit(1001)
+        .toArray();
+      if (courses.length > 1000)
+        throw new PlanError(
+          "candidate_pool_too_large",
+          400,
+          "Filler seed pool is too large to inspect safely",
+        );
+      seed.push(...courses);
+    }
+    const filtered = seed.filter((course) => {
+      if (!input.levels.length) return true;
+      const match = String(course.catalogNumber ?? "").match(/^[1-9]/);
+      return match ? input.levels.includes(Number(match[0])) : false;
+    });
+    const result: Array<{ course: Document; offering: Document }> = [];
+    for (const course of filtered) {
+      const offerings = await this.findOfferings(
+        term,
+        String(course.courseId),
+        input.academicCareer,
+      );
+      result.push(...offerings.map((offering) => ({ course, offering })));
+    }
+    return result;
   }
 
   async activeBundleById(term: ActiveTerm, bundleId: string) {

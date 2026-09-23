@@ -7,6 +7,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import type { CourseData } from "../src/contract.ts";
 import { makeBundles } from "../src/normalize/bundle.ts";
 import { normalize } from "../src/normalize/index.ts";
+import { loadCommonCoreCatalog } from "../src/output/common-core-loader.ts";
 import {
   ensureAcademicIndexes,
   loadBatch,
@@ -85,6 +86,44 @@ afterAll(async () => {
 });
 
 const db = () => client.db(`course-tool-${randomUUID()}`);
+
+test("Common Core load is idempotent when the active version is unchanged", async () => {
+  const database = db();
+  const catalog = {
+    sourceUrl: "https://example.edu/common-core.json",
+    sourceTitle: "Common Core",
+    sourceContentHash: "a".repeat(64),
+    verifiedAt: "2026-09-23T00:00:00.000Z",
+    verifier: "operator",
+    evidence: "registrar source",
+    schemes: [
+      {
+        schemeId: "2026",
+        admissionYearFrom: 2026,
+        admissionYearTo: 2029,
+        categories: [
+          { categoryId: "A", label: "Arts", courseCodes: ["HUMA1001"] },
+        ],
+      },
+    ],
+  };
+  const first = await loadCommonCoreCatalog(
+    database,
+    catalog,
+    new Date("2026-09-24T00:00:00.000Z"),
+  );
+  const second = await loadCommonCoreCatalog(
+    database,
+    catalog,
+    new Date("2026-09-25T00:00:00.000Z"),
+  );
+  expect(second).toEqual(first);
+  expect(
+    await database.collection("commonCoreCatalogState").findOne({
+      stateId: "common-core",
+    }),
+  ).toMatchObject({ revision: 1, activeCatalogVersion: first.catalogVersion });
+});
 
 describe("staged academic imports", () => {
   test("requires a complete first batch, keeps the pointer empty after rejection", async () => {

@@ -166,6 +166,15 @@ async function projectQuota(
   data: CourseData,
   row: Quota,
 ): Promise<void> {
+  const remaining =
+    row.remaining ??
+    (row.capacity !== null &&
+    row.enrolled !== null &&
+    Number.isFinite(row.capacity) &&
+    Number.isFinite(row.enrolled)
+      ? row.capacity - row.enrolled
+      : null);
+  const normalized = { ...row, remaining };
   const snapshots = db.collection("quotaSnapshots");
   await snapshots.updateOne(
     {
@@ -175,7 +184,7 @@ async function projectQuota(
     },
     {
       $setOnInsert: {
-        ...row,
+        ...normalized,
         termCode: data.term.termCode,
         recordedAt: new Date().toISOString(),
         projectionStatus: "pending",
@@ -194,7 +203,7 @@ async function projectQuota(
     )
       break;
     const next = {
-      ...row,
+      ...normalized,
       termCode: data.term.termCode,
       nextRefreshAt: null,
       staleSince: null,

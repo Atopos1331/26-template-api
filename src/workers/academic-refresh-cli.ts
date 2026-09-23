@@ -23,6 +23,8 @@ try {
     leaseSeconds: options.refreshLeaseSeconds ?? 60,
     failureCooldownSeconds: options.refreshFailureCooldownSeconds ?? 3600,
     quotaMinIntervalSeconds: options.academicQuotaMinIntervalSeconds ?? 300,
+    quotaTtlSeconds: options.academicQuotaTtlSeconds ?? 900,
+    maxWatchedJobsPerPoll: options.academicQuotaMaxJobsPerPoll ?? 100,
   });
   if (process.argv.includes("--once")) {
     await worker.runOne();

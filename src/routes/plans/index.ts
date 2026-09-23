@@ -5,6 +5,7 @@ import { PlanError } from "../../domain/plans.js";
 import { formatRevisionEtag, parseIfMatch } from "../../domain/revision.js";
 import { sendApiError } from "../../http/api-errors.js";
 import type { AppOptions } from "../../options.js";
+import { CommonCoreRepository } from "../../repositories/common-core.js";
 import { CourseCatalogRepository } from "../../repositories/course-catalog.js";
 import { CoursePlanRepository } from "../../repositories/course-plans.js";
 import { EventRepository } from "../../repositories/events.js";
@@ -166,7 +167,10 @@ function service(fastify: FastifyTypebox, opts: AppOptions) {
       autoPlanMaxRequestBytes: opts.autoPlanMaxRequestBytes,
       idempotencyRetentionSeconds: opts.idempotencyRetentionSeconds ?? 86400,
       defaultTermCode: opts.academicCurrentTermCode,
+      commonCoreMaxAgeDays: opts.commonCoreMaxAgeDays,
+      academicQuotaTtlSeconds: opts.academicQuotaTtlSeconds,
     },
+    new CommonCoreRepository(fastify.mongo.db!),
   );
 }
 

@@ -15,6 +15,7 @@ export type OptionScoreCandidate = {
   priority: number;
   seatSafety: number;
   timeFit: number;
+  instructorFit: number;
 };
 
 export type AutoPlanScoreComponents = {
@@ -36,7 +37,7 @@ function priorityTotal(courses: AutoPlanCourseInput[]) {
 function weighted(
   selected: OptionScoreCandidate[],
   totalPriority: number,
-  field: "seatSafety" | "timeFit",
+  field: "seatSafety" | "timeFit" | "instructorFit",
 ) {
   if (!totalPriority) return 50;
   return round(
@@ -67,7 +68,7 @@ export function optionScoreComponents(
     seatSafety: weighted(selected, totalPriority, "seatSafety"),
     timeFit: weighted(selected, totalPriority, "timeFit"),
     compactness,
-    instructorFit: 50,
+    instructorFit: weighted(selected, totalPriority, "instructorFit"),
   };
   return components;
 }
@@ -86,12 +87,29 @@ export function optionScore(
   const weights =
     request.mode === "seat_safety"
       ? { coverage: 0.35, seatSafety: 0.45, timeFit: 0.15, compactness: 0.05 }
-      : { coverage: 0.45, seatSafety: 0.25, timeFit: 0.2, compactness: 0.1 };
+      : request.mode === "balanced"
+        ? { coverage: 0.45, seatSafety: 0.25, timeFit: 0.2, compactness: 0.1 }
+        : request.weights
+          ? {
+              coverage: request.weights.coverage / 100,
+              seatSafety: request.weights.seatSafety / 100,
+              timeFit: request.weights.timeFit / 100,
+              compactness: request.weights.compactness / 100,
+              instructorFit: request.weights.instructorFit / 100,
+            }
+          : {
+              coverage: 0.45,
+              seatSafety: 0.25,
+              timeFit: 0.2,
+              compactness: 0.1,
+              instructorFit: 0,
+            };
   return round(
     components.coverage * weights.coverage +
       components.seatSafety * weights.seatSafety +
       components.timeFit * weights.timeFit +
-      components.compactness * weights.compactness,
+      components.compactness * weights.compactness +
+      components.instructorFit * (weights.instructorFit ?? 0),
   );
 }
 

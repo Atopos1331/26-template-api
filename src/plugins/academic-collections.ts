@@ -26,6 +26,46 @@ export type QuotaSnapshotDocument = Document & {
   sectionId: string;
   observedAt: string;
   projectionStatus: "pending" | "processing" | "done";
+  projectionLeaseExpiresAt?: Date;
+  projectionAttempts?: number;
+  recordedAt?: string;
+};
+
+export type CourseWatchDocument = Document & {
+  watchId: string;
+  ownerUsername: string;
+  targetType: "course" | "section";
+  targetId: string;
+  termCode: string;
+  notificationPreference: "none" | "in_app";
+  baselineRecordedAt: string;
+  baselineBySection: Record<string, string | null>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WatchNotificationDocument = Document & {
+  notificationId: string;
+  ownerUsername: string;
+  watchId: string;
+  termCode: string;
+  targetType: "course" | "section";
+  targetId: string;
+  changeType: "opened" | "closed" | "seats_available";
+  beforeState: Record<string, unknown>;
+  afterState: Record<string, unknown>;
+  observedAt: string;
+  dedupeKey: string;
+  readAt?: string | null;
+  createdAt: string;
+};
+
+export type WatchProjectionCheckpointDocument = Document & {
+  source: string;
+  sectionId: string;
+  lastObservedAt: string;
+  lastSnapshotId: string;
+  updatedAt: string;
 };
 
 export type ImportRunDocument = Document & {
@@ -72,6 +112,11 @@ export type AcademicCollections = {
   refreshLeases: Collection<Document>;
   importQuotaStaging: Collection<Document>;
   refreshJobs: Collection<RefreshJobDocument>;
+  courseWatches: Collection<CourseWatchDocument>;
+  watchNotifications: Collection<WatchNotificationDocument>;
+  watchProjectionCheckpoints: Collection<WatchProjectionCheckpointDocument>;
+  commonCoreCatalogs: Collection<Document>;
+  commonCoreCatalogState: Collection<Document>;
 };
 
 export async function initializeAcademicCollections(
@@ -135,6 +180,11 @@ export async function initializeAcademicCollections(
     { unique: true, name: "quota_observation_identity" },
   );
   await quotaSnapshots.createIndex({ sectionId: 1, observedAt: -1 });
+  await quotaSnapshots.createIndex({ sectionId: 1, recordedAt: 1 });
+  await quotaSnapshots.createIndex(
+    { projectionStatus: 1, projectionLeaseExpiresAt: 1, observedAt: 1 },
+    { name: "quota_projection_poll" },
+  );
   const latestQuotas = db.collection<Document>("latestQuotas");
   await latestQuotas.createIndex(
     { source: 1, sectionId: 1 },
@@ -175,6 +225,53 @@ export async function initializeAcademicCollections(
     { leaseExpiresAt: 1 },
     { name: "refresh_job_lease" },
   );
+  const courseWatches = db.collection<CourseWatchDocument>("courseWatches");
+  await courseWatches.createIndex(
+    { ownerUsername: 1, termCode: 1, targetType: 1, targetId: 1 },
+    { unique: true, name: "course_watch_identity" },
+  );
+  await courseWatches.createIndex(
+    { ownerUsername: 1, createdAt: -1, watchId: -1 },
+    { name: "course_watch_owner_list" },
+  );
+  await courseWatches.createIndex(
+    { termCode: 1, targetType: 1, targetId: 1, notificationPreference: 1 },
+    { name: "course_watch_worker_lookup" },
+  );
+  const watchNotifications =
+    db.collection<WatchNotificationDocument>("watchNotifications");
+  await watchNotifications.createIndex(
+    { ownerUsername: 1, dedupeKey: 1 },
+    { unique: true, name: "watch_notification_identity" },
+  );
+  await watchNotifications.createIndex(
+    { ownerUsername: 1, readAt: 1, createdAt: -1, notificationId: -1 },
+    { name: "watch_notification_owner_list" },
+  );
+  await watchNotifications.createIndex(
+    { watchId: 1, createdAt: -1 },
+    { name: "watch_notification_watch" },
+  );
+  const watchProjectionCheckpoints =
+    db.collection<WatchProjectionCheckpointDocument>(
+      "watchProjectionCheckpoints",
+    );
+  await watchProjectionCheckpoints.createIndex(
+    { source: 1, sectionId: 1 },
+    { unique: true, name: "watch_projection_section" },
+  );
+  const commonCoreCatalogs = db.collection<Document>("commonCoreCatalogs");
+  await commonCoreCatalogs.createIndex(
+    { catalogVersion: 1 },
+    { unique: true, name: "common_core_catalog_identity" },
+  );
+  const commonCoreCatalogState = db.collection<Document>(
+    "commonCoreCatalogState",
+  );
+  await commonCoreCatalogState.createIndex(
+    { stateId: 1 },
+    { unique: true, name: "common_core_catalog_state" },
+  );
   return {
     academicTerms,
     courses,
@@ -187,5 +284,10 @@ export async function initializeAcademicCollections(
     refreshLeases,
     importQuotaStaging,
     refreshJobs,
+    courseWatches,
+    watchNotifications,
+    watchProjectionCheckpoints,
+    commonCoreCatalogs,
+    commonCoreCatalogState,
   };
 }

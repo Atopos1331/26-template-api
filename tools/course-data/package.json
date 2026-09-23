@@ -8,6 +8,7 @@
     "fixture": "bun src/cli.ts fixture",
     "load": "bun src/cli.ts load",
     "refresh": "bun src/cli.ts refresh",
+    "common-core-load": "bun src/cli.ts common-core-load",
     "test": "bun test test",
     "compile": "tsc -p tsconfig.json"
   },
