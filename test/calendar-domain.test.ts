@@ -312,6 +312,20 @@ test("banner captures current, upcoming, free and boundary states", () => {
     },
   );
   assert.equal(timeBanner([course, active], now, 1).item?.calendarKey, "a");
+  const laterManual = occurrence(
+    "2026-09-24T10:45:00.000Z",
+    "2026-09-24T11:30:00.000Z",
+    { calendarKey: "later-manual" },
+  );
+  const soonerCourse = occurrence(
+    "2026-09-24T10:15:00.000Z",
+    "2026-09-24T11:00:00.000Z",
+    { calendarKey: "sooner-course", source: "course" },
+  );
+  assert.equal(
+    timeBanner([laterManual, soonerCourse], now, 1).item?.calendarKey,
+    "sooner-course",
+  );
   assert.equal(
     timeBanner(
       [

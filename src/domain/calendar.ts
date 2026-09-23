@@ -435,7 +435,12 @@ export function timeBanner(
         Date.parse(item.startsAt) > timestamp &&
         Date.parse(item.startsAt) <= horizon,
     )
-    .sort(compare)[0];
+    .sort(
+      (a, b) =>
+        a.startsAt.localeCompare(b.startsAt) ||
+        priority(a) - priority(b) ||
+        a.calendarKey.localeCompare(b.calendarKey),
+    )[0];
   if (upcoming)
     return {
       state: "upcoming" as const,

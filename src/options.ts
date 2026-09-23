@@ -53,6 +53,20 @@ function cursorSigningKey(env: Env): string {
   return randomBytes(32).toString("base64url");
 }
 
+function autoPlanTokenSigningKey(env: Env): string {
+  const value = env.AUTO_PLAN_TOKEN_SIGNING_KEY;
+  if (value !== undefined) {
+    if (Buffer.byteLength(value) < 32) {
+      throw new ConfigurationError("AUTO_PLAN_TOKEN_SIGNING_KEY");
+    }
+    return value;
+  }
+  if (env.NODE_ENV === "production") {
+    throw new ConfigurationError("AUTO_PLAN_TOKEN_SIGNING_KEY");
+  }
+  return randomBytes(32).toString("base64url");
+}
+
 type OptionArgs = {
   env: Env;
   envName: string;
@@ -169,6 +183,18 @@ export type AppOptions = {
   appTimezone?: string;
   cursorSigningKey?: string;
   cursorTtlSeconds?: number;
+  autoPlanTokenSigningKey?: string;
+  autoPlanTokenTtlSeconds?: number;
+  autoPlanMaxDesiredCourses?: number;
+  autoPlanMaxSelectedCourses?: number;
+  autoPlanMaxCandidateBundles?: number;
+  autoPlanMaxCandidateOccurrences?: number;
+  autoPlanMaxConflictEdges?: number;
+  autoPlanMaxHorizonDays?: number;
+  autoPlanMaxRequestBytes?: number;
+  autoPlanMaxOptionTokenBytes?: number;
+  autoPlanSolverTimeoutMs?: number;
+  autoPlanSolverConcurrency?: number;
   recurrenceMaxSpanDays?: number;
   idempotencyRetentionSeconds?: number;
   calendarMaxWindowDays?: number;
@@ -209,6 +235,62 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
     appTimezone: applicationTimezone(env),
     cursorSigningKey: cursorSigningKey(env),
     cursorTtlSeconds: positiveInteger(env, "CURSOR_TTL_SECONDS", 900),
+    autoPlanTokenSigningKey: autoPlanTokenSigningKey(env),
+    autoPlanTokenTtlSeconds: positiveInteger(
+      env,
+      "AUTO_PLAN_TOKEN_TTL_SECONDS",
+      600,
+    ),
+    autoPlanMaxDesiredCourses: positiveInteger(
+      env,
+      "AUTO_PLAN_MAX_DESIRED_COURSES",
+      20,
+    ),
+    autoPlanMaxSelectedCourses: positiveInteger(
+      env,
+      "AUTO_PLAN_MAX_SELECTED_COURSES",
+      12,
+    ),
+    autoPlanMaxCandidateBundles: positiveInteger(
+      env,
+      "AUTO_PLAN_MAX_CANDIDATE_BUNDLES",
+      600,
+    ),
+    autoPlanMaxCandidateOccurrences: positiveInteger(
+      env,
+      "AUTO_PLAN_MAX_CANDIDATE_OCCURRENCES",
+      50_000,
+    ),
+    autoPlanMaxConflictEdges: positiveInteger(
+      env,
+      "AUTO_PLAN_MAX_CONFLICT_EDGES",
+      100_000,
+    ),
+    autoPlanMaxHorizonDays: positiveInteger(
+      env,
+      "AUTO_PLAN_MAX_HORIZON_DAYS",
+      240,
+    ),
+    autoPlanMaxRequestBytes: positiveInteger(
+      env,
+      "AUTO_PLAN_MAX_REQUEST_BYTES",
+      32_768,
+    ),
+    autoPlanMaxOptionTokenBytes: positiveInteger(
+      env,
+      "AUTO_PLAN_MAX_OPTION_TOKEN_BYTES",
+      131_072,
+    ),
+    autoPlanSolverTimeoutMs: positiveInteger(
+      env,
+      "AUTO_PLAN_SOLVER_TIMEOUT_MS",
+      8_000,
+    ),
+    autoPlanSolverConcurrency: positiveInteger(
+      env,
+      "AUTO_PLAN_SOLVER_CONCURRENCY",
+      2,
+    ),
     recurrenceMaxSpanDays: positiveInteger(
       env,
       "RECURRENCE_MAX_SPAN_DAYS",

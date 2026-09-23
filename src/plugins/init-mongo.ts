@@ -3,6 +3,11 @@ import type { FastifyInstance } from "fastify";
 import fp from "fastify-plugin";
 import type { Collection, Document, ObjectId } from "mongodb";
 import packageJson from "../../package.json" with { type: "json" };
+import type {
+  AutoPlanApplyMarker,
+  CoursePlanItem,
+  PlanStatus,
+} from "../domain/plans.js";
 import {
   type AcademicCollections,
   initializeAcademicCollections,
@@ -58,6 +63,19 @@ export type IdempotencyRecordDocument = {
   leaseExpiresAt?: string;
   createdAt: string;
   expiresAt: Date;
+};
+
+export type CoursePlanDocument = {
+  ownerUsername: string;
+  name: string;
+  termCode: string;
+  description?: string | null;
+  status: PlanStatus;
+  revision: number;
+  items: CoursePlanItem[];
+  lastAutoPlanApply?: AutoPlanApplyMarker;
+  createdAt: string;
+  updatedAt: string;
 };
 
 /**
@@ -285,11 +303,30 @@ async function initializeCollections(fastify: FastifyInstance): Promise<void> {
     { name: "idempotency_expires_at", expireAfterSeconds: 0 },
   );
 
+  const coursePlans = db.collection<CoursePlanDocument>("coursePlans");
+  await coursePlans.createIndex(
+    { ownerUsername: 1, termCode: 1, status: 1 },
+    { name: "course_plans_owner_term" },
+  );
+  await coursePlans.createIndex(
+    { ownerUsername: 1, updatedAt: -1, _id: -1 },
+    { name: "course_plans_owner_updated" },
+  );
+  await coursePlans.createIndex(
+    { ownerUsername: 1, termCode: 1 },
+    {
+      name: "course_plans_active_identity",
+      unique: true,
+      partialFilterExpression: { status: "active" },
+    },
+  );
+
   const academic = await initializeAcademicCollections(db);
   fastify.decorate("collections", {
     example,
     events,
     idempotencyRecords,
+    coursePlans,
     ...academic,
   });
 }
@@ -322,6 +359,7 @@ declare module "fastify" {
       example: Collection<Document>;
       events: Collection<EventDocument>;
       idempotencyRecords: Collection<IdempotencyRecordDocument>;
+      coursePlans: Collection<CoursePlanDocument>;
     };
   }
 }

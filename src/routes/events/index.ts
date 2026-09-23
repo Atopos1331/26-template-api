@@ -6,11 +6,15 @@ import { EventError, eventResponse } from "../../domain/events.js";
 import { formatRevisionEtag, parseIfMatch } from "../../domain/revision.js";
 import { sendApiError } from "../../http/api-errors.js";
 import type { AppOptions } from "../../options.js";
+import { CourseCatalogRepository } from "../../repositories/course-catalog.js";
+import { CoursePlanRepository } from "../../repositories/course-plans.js";
 import { EventRepository } from "../../repositories/events.js";
 import {
   CalendarService,
+  CoursePlanCalendarSource,
   ManualCalendarSource,
 } from "../../services/calendar.js";
+import { CoursePlanService } from "../../services/course-plans.js";
 import { EventService } from "../../services/events.js";
 
 const EventInput = Type.Object(
@@ -99,11 +103,45 @@ const events: FastifyPluginAsync<AppOptions> = async (
   fastify: FastifyTypebox,
   opts,
 ) => {
+  const planService = () =>
+    new CoursePlanService(
+      new CoursePlanRepository(fastify.collections.coursePlans),
+      new CourseCatalogRepository(fastify.mongo.db!),
+      new EventRepository(fastify.collections.events),
+      fastify.collections.idempotencyRecords,
+      {
+        timezone: opts.appTimezone ?? "Asia/Hong_Kong",
+        cursorKey:
+          opts.cursorSigningKey ?? "development-only-cursor-signing-key",
+        cursorTtlSeconds: opts.cursorTtlSeconds ?? 900,
+        autoPlanTokenKey:
+          opts.autoPlanTokenSigningKey ??
+          "development-only-auto-plan-token-key-32-bytes",
+        autoPlanTokenTtlSeconds: opts.autoPlanTokenTtlSeconds ?? 600,
+        autoPlanMaxTokenBytes: opts.autoPlanMaxOptionTokenBytes,
+        autoPlanMaxDesiredCourses: opts.autoPlanMaxDesiredCourses,
+        autoPlanMaxSelectedCourses: opts.autoPlanMaxSelectedCourses,
+        autoPlanMaxCandidateBundles: opts.autoPlanMaxCandidateBundles,
+        autoPlanMaxCandidateOccurrences: opts.autoPlanMaxCandidateOccurrences,
+        autoPlanMaxConflictEdges: opts.autoPlanMaxConflictEdges,
+        autoPlanMaxHorizonDays: opts.autoPlanMaxHorizonDays,
+        autoPlanSolverTimeoutMs: opts.autoPlanSolverTimeoutMs,
+        autoPlanSolverConcurrency: opts.autoPlanSolverConcurrency,
+        autoPlanMaxRequestBytes: opts.autoPlanMaxRequestBytes,
+        idempotencyRetentionSeconds: opts.idempotencyRetentionSeconds ?? 86400,
+        defaultTermCode: opts.academicCurrentTermCode,
+      },
+    );
   const calendar = () => {
     const manual = new ManualCalendarSource(
       new EventRepository(fastify.collections.events),
     );
-    return new CalendarService(manual, [manual], {
+    const course = new CoursePlanCalendarSource(
+      (owner, window, planId, termCode) =>
+        planService().calendarItems(owner, window, planId, termCode),
+      (owner, key) => planService().resolvesCalendarKey(owner, key),
+    );
+    return new CalendarService(manual, [manual, course], {
       timezone: opts.appTimezone ?? "Asia/Hong_Kong",
       maxItems: opts.calendarMaxItems ?? 1000,
       maxConflicts: opts.calendarMaxConflicts ?? 10000,

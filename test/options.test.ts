@@ -100,8 +100,22 @@ describe("loadOptions", () => {
     const configured = loadOptions({
       NODE_ENV: "production",
       CURSOR_SIGNING_KEY: "x".repeat(32),
+      AUTO_PLAN_TOKEN_SIGNING_KEY: "y".repeat(32),
     });
     expect(configured.cursorSigningKey).toBe("x".repeat(32));
+    expect(configured.autoPlanTokenSigningKey).toBe("y".repeat(32));
+  });
+
+  test("requires an independent auto-plan token key in production", () => {
+    expect(() =>
+      loadOptions({
+        NODE_ENV: "production",
+        CURSOR_SIGNING_KEY: "x".repeat(32),
+      }),
+    ).toThrow("AUTO_PLAN_TOKEN_SIGNING_KEY");
+    expect(() => loadOptions({ AUTO_PLAN_TOKEN_SIGNING_KEY: "short" })).toThrow(
+      "AUTO_PLAN_TOKEN_SIGNING_KEY",
+    );
   });
 
   test("validates positive event retention and cursor limits", () => {
@@ -113,6 +127,17 @@ describe("loadOptions", () => {
       "CALENDAR_MAX_ITEMS",
       "CALENDAR_MAX_CONFLICTS",
       "TIME_BANNER_UPCOMING_HOURS",
+      "AUTO_PLAN_TOKEN_TTL_SECONDS",
+      "AUTO_PLAN_MAX_DESIRED_COURSES",
+      "AUTO_PLAN_MAX_SELECTED_COURSES",
+      "AUTO_PLAN_MAX_CANDIDATE_BUNDLES",
+      "AUTO_PLAN_MAX_CANDIDATE_OCCURRENCES",
+      "AUTO_PLAN_MAX_CONFLICT_EDGES",
+      "AUTO_PLAN_MAX_HORIZON_DAYS",
+      "AUTO_PLAN_MAX_REQUEST_BYTES",
+      "AUTO_PLAN_MAX_OPTION_TOKEN_BYTES",
+      "AUTO_PLAN_SOLVER_TIMEOUT_MS",
+      "AUTO_PLAN_SOLVER_CONCURRENCY",
     ]) {
       expect(() => loadOptions({ [name]: "0" })).toThrow(name);
       expect(() => loadOptions({ [name]: "1.5" })).toThrow(name);

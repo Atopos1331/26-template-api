@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { AcademicError } from "../domain/academic.js";
 import { EventError } from "../domain/events.js";
+import { PlanError } from "../domain/plans.js";
 import { RevisionHeaderError } from "../domain/revision.js";
 import {
   AuthorizationHeaderError,
@@ -19,12 +20,17 @@ export function sendApiError(
   if (
     error instanceof EventError ||
     error instanceof RevisionHeaderError ||
-    error instanceof AcademicError
+    error instanceof AcademicError ||
+    error instanceof PlanError
   ) {
     status = error.statusCode;
     code = error.code;
     message = error.message;
-    if (error instanceof EventError || error instanceof AcademicError)
+    if (
+      error instanceof EventError ||
+      error instanceof AcademicError ||
+      error instanceof PlanError
+    )
       fields = error.fields;
   } else if (
     error instanceof UnauthorizedError ||
@@ -56,8 +62,9 @@ export function sendApiError(
       requestId: request.id,
     },
   };
-  return reply
+  const response = reply
     .code(status)
-    .header("content-type", "application/json; charset=utf-8")
-    .send(JSON.stringify(body));
+    .header("content-type", "application/json; charset=utf-8");
+  if (code === "rate_limited") response.header("retry-after", "1");
+  return response.send(JSON.stringify(body));
 }

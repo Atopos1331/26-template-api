@@ -5,11 +5,15 @@ import { calendarWindow } from "../../domain/calendar.js";
 import { EventError } from "../../domain/events.js";
 import { sendApiError } from "../../http/api-errors.js";
 import type { AppOptions } from "../../options.js";
+import { CourseCatalogRepository } from "../../repositories/course-catalog.js";
+import { CoursePlanRepository } from "../../repositories/course-plans.js";
 import { EventRepository } from "../../repositories/events.js";
 import {
   CalendarService,
+  CoursePlanCalendarSource,
   ManualCalendarSource,
 } from "../../services/calendar.js";
+import { CoursePlanService } from "../../services/course-plans.js";
 
 const Occurrence = Type.Object(
   {
@@ -77,11 +81,52 @@ const calendar: FastifyPluginAsync<AppOptions> = async (
   fastify: FastifyTypebox,
   opts,
 ) => {
-  const service = () => {
+  const planService = () =>
+    new CoursePlanService(
+      new CoursePlanRepository(fastify.collections.coursePlans),
+      new CourseCatalogRepository(fastify.mongo.db!),
+      new EventRepository(fastify.collections.events),
+      fastify.collections.idempotencyRecords,
+      {
+        timezone: opts.appTimezone ?? "Asia/Hong_Kong",
+        cursorKey:
+          opts.cursorSigningKey ?? "development-only-cursor-signing-key",
+        cursorTtlSeconds: opts.cursorTtlSeconds ?? 900,
+        autoPlanTokenKey:
+          opts.autoPlanTokenSigningKey ??
+          "development-only-auto-plan-token-key-32-bytes",
+        autoPlanTokenTtlSeconds: opts.autoPlanTokenTtlSeconds ?? 600,
+        autoPlanMaxTokenBytes: opts.autoPlanMaxOptionTokenBytes,
+        autoPlanMaxDesiredCourses: opts.autoPlanMaxDesiredCourses,
+        autoPlanMaxSelectedCourses: opts.autoPlanMaxSelectedCourses,
+        autoPlanMaxCandidateBundles: opts.autoPlanMaxCandidateBundles,
+        autoPlanMaxCandidateOccurrences: opts.autoPlanMaxCandidateOccurrences,
+        autoPlanMaxConflictEdges: opts.autoPlanMaxConflictEdges,
+        autoPlanMaxHorizonDays: opts.autoPlanMaxHorizonDays,
+        autoPlanSolverTimeoutMs: opts.autoPlanSolverTimeoutMs,
+        autoPlanSolverConcurrency: opts.autoPlanSolverConcurrency,
+        autoPlanMaxRequestBytes: opts.autoPlanMaxRequestBytes,
+        idempotencyRetentionSeconds: opts.idempotencyRetentionSeconds ?? 86400,
+        defaultTermCode: opts.academicCurrentTermCode,
+      },
+    );
+  const service = (planId?: string, termCode?: string) => {
     const manual = new ManualCalendarSource(
       new EventRepository(fastify.collections.events),
     );
-    return new CalendarService(manual, [manual], {
+    const course = new CoursePlanCalendarSource(
+      (owner, window, requestedPlanId, requestedTermCode) =>
+        planService().calendarItems(
+          owner,
+          window,
+          requestedPlanId,
+          requestedTermCode,
+        ),
+      (owner, key) => planService().resolvesCalendarKey(owner, key),
+      planId,
+      termCode,
+    );
+    return new CalendarService(manual, [manual, course], {
       timezone: opts.appTimezone ?? "Asia/Hong_Kong",
       maxItems: opts.calendarMaxItems ?? 1000,
       maxConflicts: opts.calendarMaxConflicts ?? 10000,
@@ -126,17 +171,32 @@ const calendar: FastifyPluginAsync<AppOptions> = async (
           },
         },
         async (request) => {
-          noUnsupportedOptions(request.query, ["from", "to"]);
+          noUnsupportedOptions(request.query, [
+            "from",
+            "to",
+            "termCode",
+            "planId",
+          ]);
           const window = calendarWindow(
             request.query.from,
             request.query.to,
             timezone,
             maxWindowDays,
           );
+          const calendarService = service(
+            request.query.planId,
+            request.query.termCode,
+          );
           return {
-            items: await service().list(request.user.username, window),
+            items: await calendarService.list(request.user.username, window),
             page: { nextCursor: null, hasMore: false as const },
-            meta: { warnings: ["no_current_term"] },
+            meta: {
+              warnings: await planService().calendarWarnings(
+                request.user.username,
+                request.query.planId,
+                request.query.termCode,
+              ),
+            },
           };
         },
       );
@@ -161,16 +221,34 @@ const calendar: FastifyPluginAsync<AppOptions> = async (
           },
         },
         async (request) => {
-          noUnsupportedOptions(request.query, ["from", "to"]);
+          noUnsupportedOptions(request.query, [
+            "from",
+            "to",
+            "termCode",
+            "planId",
+          ]);
           const window = calendarWindow(
             request.query.from,
             request.query.to,
             timezone,
             maxWindowDays,
           );
+          const calendarService = service(
+            request.query.planId,
+            request.query.termCode,
+          );
           return {
-            data: await service().conflicts(request.user.username, window),
-            meta: { warnings: ["no_current_term"] },
+            data: await calendarService.conflicts(
+              request.user.username,
+              window,
+            ),
+            meta: {
+              warnings: await planService().calendarWarnings(
+                request.user.username,
+                request.query.planId,
+                request.query.termCode,
+              ),
+            },
           };
         },
       );
@@ -208,10 +286,20 @@ const calendar: FastifyPluginAsync<AppOptions> = async (
           },
         },
         async (request) => {
-          noUnsupportedOptions(request.query, []);
+          noUnsupportedOptions(request.query, ["termCode", "planId"]);
+          const calendarService = service(
+            request.query.planId,
+            request.query.termCode,
+          );
           return {
-            data: await service().banner(request.user.username),
-            meta: { warnings: ["no_current_term"] },
+            data: await calendarService.banner(request.user.username),
+            meta: {
+              warnings: await planService().calendarWarnings(
+                request.user.username,
+                request.query.planId,
+                request.query.termCode,
+              ),
+            },
           };
         },
       );

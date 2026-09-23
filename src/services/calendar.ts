@@ -38,6 +38,37 @@ export class ManualCalendarSource implements CalendarSource {
   }
 }
 
+export class CoursePlanCalendarSource implements CalendarSource {
+  readonly source = "course";
+
+  constructor(
+    private readonly loader: (
+      owner: string,
+      window: CalendarWindow,
+      planId?: string,
+      termCode?: string,
+    ) => Promise<CalendarOccurrence[]>,
+    private readonly resolver: (owner: string, key: string) => Promise<boolean>,
+    private readonly planId?: string,
+    private readonly termCode?: string,
+  ) {}
+
+  async load(owner: string, window: CalendarWindow, maxItems: number) {
+    const items = await this.loader(owner, window, this.planId, this.termCode);
+    if (items.length > maxItems)
+      throw new EventError(
+        "calendar_window_too_dense",
+        400,
+        "Choose a narrower calendar window",
+      );
+    return items;
+  }
+
+  resolvesCalendarKey(owner: string, key: string) {
+    return this.resolver(owner, key);
+  }
+}
+
 export type CalendarSettings = {
   timezone: string;
   maxItems: number;
