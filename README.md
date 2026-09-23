@@ -96,7 +96,7 @@ src/
   options.ts            # Environment variable parsing
   plugins/
     auth.ts             # Bearer-token auth plugin + withAuth scope
-    init-mongo.ts       # Collections and index bootstrap
+    init-mongo.ts       # Typed collections and index bootstrap
     sensible.ts         # @fastify/sensible error helpers
   auth/
     users.ts            # Users and tokens
@@ -107,13 +107,14 @@ test/
   routes/               # Route tests
   auth-schema.test.ts   # withAuth schema-merging contract tests
   init-mongo.test.ts    # MongoDB URI-defaulting tests
+  mongo-collections.test.ts # Event/idempotency indexes and uniqueness
   mongo.test.ts         # Full-app boot + in-memory MongoDB wiring
   options.test.ts       # Env parsing tests
 ```
 
 ## Tests
 
-`bun run test` runs everything. Route tests exercise each plugin on a bare Fastify instance; the Mongo test boots the whole app, plugins autoloaded and collections created. It uses an in-memory server by default, or the dedicated database named by `MONGO_TEST_URI` when set. No external service is needed by default.
+`bun run test` runs everything. Route tests exercise each plugin on a bare Fastify instance; the Mongo test boots the whole app, plugins autoloaded and collections created. It uses an in-memory server by default, or the dedicated database named by `MONGO_TEST_URI` when set. Collection/index tests always use an isolated in-memory MongoDB. No external service is needed by default.
 
 ## Adding your own stuff
 

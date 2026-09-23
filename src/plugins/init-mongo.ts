@@ -1,8 +1,60 @@
 import mongodb from "@fastify/mongodb";
 import type { FastifyInstance } from "fastify";
 import fp from "fastify-plugin";
-import type { Collection, Document } from "mongodb";
+import type { Collection, Document, ObjectId } from "mongodb";
 import packageJson from "../../package.json" with { type: "json" };
+
+export type EventDocument = {
+  ownerUsername: string;
+  title: string;
+  description?: string;
+  location?: string;
+  startsAt: string;
+  endsAt: string;
+  startDate?: string;
+  endDate?: string;
+  allDay: boolean;
+  timezone: string;
+  color?: string;
+  recurrence?: {
+    frequency: "weekly";
+    interval: number;
+    weekdays: string[];
+    until: string;
+  };
+  source: string;
+  sourceName?: string;
+  externalId?: string | null;
+  importId?: ObjectId | null;
+  recurrenceId?: string | null;
+  recurrenceStatus?: string;
+  eventType?: "class" | "exam" | "deadline" | "reminder" | "other";
+  blocksTime: boolean;
+  supersedesCalendarKey?: string;
+  readonly: boolean;
+  revision: number;
+  operationId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type IdempotencyRecordState = "processing" | "completed" | "failed";
+
+export type IdempotencyRecordDocument = {
+  ownerScope: string;
+  routeKey: string;
+  idempotencyKeyHash: string;
+  requestHash: string;
+  operationId?: string;
+  state: IdempotencyRecordState;
+  responseStatus?: number;
+  responseBody?: unknown;
+  encryptedOneTimeSecret?: string;
+  resourceId?: ObjectId;
+  leaseExpiresAt?: string;
+  createdAt: string;
+  expiresAt: Date;
+};
 
 /**
  * Options for {@link resolveMongoUri} and {@link mongoPlugin}.
@@ -156,6 +208,78 @@ export type InitMongoPluginOptions = {
   test?: boolean;
 };
 
+async function initializeCollections(fastify: FastifyInstance): Promise<void> {
+  const db = fastify.mongo.db;
+  if (!db) {
+    throw new Error(
+      "MongoDB database handle is unavailable; mongoPlugin did not connect. Check MONGO_URI and the MongoDB server.",
+    );
+  }
+
+  const example = db.collection<Document>("example");
+  await example.createIndex({ example: 1 });
+
+  const events = db.collection<EventDocument>("events");
+  await events.createIndex(
+    { ownerUsername: 1, startsAt: 1, _id: 1 },
+    { name: "events_owner_start" },
+  );
+  await events.createIndex(
+    { ownerUsername: 1, updatedAt: 1, _id: 1 },
+    { name: "events_owner_updated" },
+  );
+  await events.createIndex(
+    { ownerUsername: 1, source: 1, externalId: 1 },
+    {
+      name: "events_manual_external_id",
+      unique: true,
+      partialFilterExpression: {
+        source: "manual",
+        externalId: { $type: "string" },
+        importId: null,
+      },
+    },
+  );
+  await events.createIndex(
+    {
+      ownerUsername: 1,
+      source: 1,
+      externalId: 1,
+      recurrenceId: 1,
+      importId: 1,
+    },
+    {
+      name: "events_import_identity",
+      unique: true,
+      partialFilterExpression: {
+        externalId: { $type: "string" },
+        importId: { $type: "objectId" },
+      },
+    },
+  );
+  await events.createIndex(
+    { ownerUsername: 1, importId: 1 },
+    { name: "events_owner_import" },
+  );
+
+  const idempotencyRecords =
+    db.collection<IdempotencyRecordDocument>("idempotencyRecords");
+  await idempotencyRecords.createIndex(
+    { ownerScope: 1, routeKey: 1, idempotencyKeyHash: 1 },
+    { name: "idempotency_owner_route_key", unique: true },
+  );
+  await idempotencyRecords.createIndex(
+    { expiresAt: 1 },
+    { name: "idempotency_expires_at", expireAfterSeconds: 0 },
+  );
+
+  fastify.decorate("collections", {
+    example,
+    events,
+    idempotencyRecords,
+  });
+}
+
 /**
  * Connects to MongoDB and prepares the application collections.
  *
@@ -174,17 +298,7 @@ export default fp<InitMongoPluginOptions>(async (fastify, opts) => {
   });
 
   fastify.addHook("onReady", async () => {
-    // Initialize the MongoDB database.
-    // Add your collections here and create the indexes you need.
-    const db = fastify.mongo.db;
-    if (!db) {
-      throw new Error(
-        "MongoDB database handle is unavailable; mongoPlugin did not connect. Check MONGO_URI and the MongoDB server.",
-      );
-    }
-    const example = db.collection<Document>("example");
-    await example.createIndex({ example: 1 });
-    fastify.decorate("collections", { example });
+    await initializeCollections(fastify);
   });
 });
 
@@ -192,6 +306,8 @@ declare module "fastify" {
   export interface FastifyInstance {
     collections: {
       example: Collection<Document>;
+      events: Collection<EventDocument>;
+      idempotencyRecords: Collection<IdempotencyRecordDocument>;
     };
   }
 }
