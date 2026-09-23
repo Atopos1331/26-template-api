@@ -27,8 +27,9 @@ Everything here is optional. Copy `.env.example` to `.env` and set what you need
 | Variable | What it does |
 | --- | --- |
 | `MONGO_URI` | MongoDB URI for dev. Unset means in-memory. |
-| `MONGO_TEST_URI` | Same thing, but for `bun test`. |
+| `MONGO_TEST_URI` | Dedicated database for full-app MongoDB tests. Unset means in-memory; do not point it at the app database. |
 | `AUTH_SKIP` | Set to `true` to turn auth off locally. |
+| `APP_TIMEZONE` | IANA timezone for timetable/calendar features. Defaults to `Asia/Hong_Kong`; invalid values fail startup. |
 
 ## Scripts
 
@@ -112,7 +113,7 @@ test/
 
 ## Tests
 
-`bun run test` runs everything. Route tests exercise each plugin on a bare Fastify instance; the Mongo test boots the whole app, plugins autoloaded and collections created, against the in-memory server unless `MONGO_TEST_URI` is set. No external services anywhere.
+`bun run test` runs everything. Route tests exercise each plugin on a bare Fastify instance; the Mongo test boots the whole app, plugins autoloaded and collections created. It uses an in-memory server by default, or the dedicated database named by `MONGO_TEST_URI` when set. No external service is needed by default.
 
 ## Adding your own stuff
 

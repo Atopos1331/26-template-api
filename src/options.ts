@@ -5,6 +5,29 @@ import type { InitMongoPluginOptions } from "./plugins/init-mongo.js";
 
 export type Env = Record<string, string | undefined>;
 
+export class ConfigurationError extends Error {
+  constructor(envName: string) {
+    super(`Invalid configuration: ${envName}`);
+    this.name = "ConfigurationError";
+  }
+}
+
+function applicationTimezone(env: Env): string {
+  const configured = env.APP_TIMEZONE;
+  if (configured === undefined) return "Asia/Hong_Kong";
+
+  const timezone = configured.trim();
+  if (!timezone) throw new ConfigurationError("APP_TIMEZONE");
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
+  } catch {
+    throw new ConfigurationError("APP_TIMEZONE");
+  }
+
+  return timezone;
+}
+
 type OptionArgs = {
   env: Env;
   envName: string;
@@ -118,6 +141,7 @@ export type AppOptions = {
   // Place your custom options for app below here.
   // Optional: Are we in tests?
   test?: boolean;
+  appTimezone?: string;
 } & FastifyServerOptions &
   Partial<AutoloadPluginOptions> &
   InitMongoPluginOptions &
@@ -138,6 +162,7 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
     mongoUri: getOption(env, "MONGO_URI", false)?.trim() || undefined,
     mongoTestUri: getOption(env, "MONGO_TEST_URI", false)?.trim() || undefined,
     authSkip: getBooleanOption(env, "AUTH_SKIP", false),
+    appTimezone: applicationTimezone(env),
   };
 
   return options;

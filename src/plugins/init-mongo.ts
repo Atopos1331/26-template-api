@@ -29,8 +29,8 @@ function parseMongoConnectionString(uri: string): URL {
   let parsed: URL;
   try {
     parsed = new URL(uri);
-  } catch (cause) {
-    throw new Error("Invalid MongoDB URI", { cause });
+  } catch {
+    throw new Error("Invalid MongoDB URI");
   }
 
   // WHATWG URL happily parses scheme-less strings like "localhost:27018" as
@@ -38,7 +38,7 @@ function parseMongoConnectionString(uri: string): URL {
   // the failure is immediate and clear instead of an opaque driver error.
   if (parsed.protocol !== "mongodb:" && parsed.protocol !== "mongodb+srv:") {
     throw new Error(
-      `Invalid MongoDB URI: expected a "mongodb://" or "mongodb+srv://" scheme, got "${uri}"`,
+      'Invalid MongoDB URI: expected a "mongodb://" or "mongodb+srv://" scheme',
     );
   }
 

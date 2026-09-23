@@ -3,7 +3,11 @@
 // URIs fail here with a clear message instead of at driver connect time.
 
 import { describe, expect, test } from "bun:test";
-import { withDefaultMongoDatabase } from "../src/plugins/init-mongo.js";
+import Fastify from "fastify";
+import {
+  resolveMongoUri,
+  withDefaultMongoDatabase,
+} from "../src/plugins/init-mongo.js";
 
 describe("withDefaultMongoDatabase", () => {
   test("appends the database name when none is present", () => {
@@ -41,5 +45,37 @@ describe("withDefaultMongoDatabase", () => {
     expect(() => withDefaultMongoDatabase("localhost:27018", "db")).toThrow(
       "Invalid MongoDB URI",
     );
+  });
+
+  test("invalid MongoDB URI errors do not expose credentials", () => {
+    const secret = "do-not-log-this";
+    for (const uri of [
+      `http://user:${secret}@localhost:27018/db`,
+      `mongodb://user:${secret}@/db`,
+    ]) {
+      try {
+        withDefaultMongoDatabase(uri, "db");
+        throw new Error("Expected an invalid MongoDB URI");
+      } catch (error) {
+        expect((error as Error).message).toContain("Invalid MongoDB URI");
+        expect((error as Error).message).not.toContain(secret);
+        expect(String((error as Error).cause ?? "")).not.toContain(secret);
+      }
+    }
+  });
+
+  test("test mode selects the test URI, not the application URI", async () => {
+    const app = Fastify();
+    try {
+      expect(
+        await resolveMongoUri(app, "template-api", {
+          test: true,
+          mongoUri: "mongodb://localhost:27018/app",
+          mongoTestUri: "mongodb://localhost:27018/template-api-test",
+        }),
+      ).toBe("mongodb://localhost:27018/template-api-test");
+    } finally {
+      await app.close();
+    }
   });
 });

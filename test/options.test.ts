@@ -52,4 +52,30 @@ describe("loadOptions", () => {
     // There are no required environment variables; every option is optional.
     expect(() => loadOptions({})).not.toThrow();
   });
+
+  test("uses the campus timezone when APP_TIMEZONE is unset", () => {
+    expect(loadOptions({}).appTimezone).toBe("Asia/Hong_Kong");
+  });
+
+  test("accepts a supplied IANA timezone", () => {
+    expect(loadOptions({ APP_TIMEZONE: " America/Chicago " }).appTimezone).toBe(
+      "America/Chicago",
+    );
+  });
+
+  test("rejects a blank or unknown APP_TIMEZONE without echoing its value", () => {
+    for (const value of [" ", "Not/A_Real_Timezone"]) {
+      try {
+        loadOptions({ APP_TIMEZONE: value });
+        throw new Error("Expected invalid timezone to fail");
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).name).toBe("ConfigurationError");
+        expect((error as Error).message).toContain("APP_TIMEZONE");
+        if (value.trim()) {
+          expect((error as Error).message).not.toContain(value.trim());
+        }
+      }
+    }
+  });
 });
