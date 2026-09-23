@@ -22,7 +22,19 @@ services:
       NODE_ENV: development
       MONGO_URI: mongodb://mongodb:27017/template-api
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Hong_Kong}
+      ACADEMIC_CURRENT_TERM_CODE: ${ACADEMIC_CURRENT_TERM_CODE:-}
       AUTH_SKIP: "false"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  academic-worker:
+    build: .
+    command: ["bun", "run", "worker:academic-refresh"]
+    environment:
+      NODE_ENV: development
+      MONGO_URI: mongodb://mongodb:27017/template-api
     depends_on:
       mongodb:
         condition: service_healthy

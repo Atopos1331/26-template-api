@@ -51,6 +51,7 @@ export type RawImport = {
   subjects: string[];
   pageTotals: Record<string, number>;
   pages: Array<{ subject: string; page: number; html: string }>;
+  termSignals?: { current: boolean; selectable: boolean };
 };
 
 const base = "https://w5.ab.ust.hk/wcq/cgi-bin";

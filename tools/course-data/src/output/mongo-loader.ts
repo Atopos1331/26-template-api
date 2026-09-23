@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { Db, Document } from "mongodb";
-import type { CourseData, Quota, Resource } from "../contract.ts";
+import type { Bundle, CourseData, Quota, Resource } from "../contract.ts";
 import { validate } from "../contract.ts";
 
 const collections = {
@@ -51,6 +52,30 @@ export async function ensureAcademicIndexes(db: Db): Promise<void> {
         { name: `${resource}_active_batch` },
       );
   }
+  await db.collection("courses").createIndex(
+    {
+      source: 1,
+      termCode: 1,
+      importBatchId: 1,
+      retiredAt: 1,
+      subject: 1,
+      catalogNumber: 1,
+      courseCode: 1,
+    },
+    { name: "courses_listing" },
+  );
+  await db
+    .collection("courseOfferings")
+    .createIndex(
+      { courseId: 1, source: 1, termCode: 1, importBatchId: 1, retiredAt: 1 },
+      { name: "offerings_by_course_batch" },
+    );
+  await db
+    .collection("classSections")
+    .createIndex(
+      { source: 1, termCode: 1, importBatchId: 1, retiredAt: 1, offeringId: 1 },
+      { name: "sections_by_offering_batch" },
+    );
   await db
     .collection("quotaSnapshots")
     .createIndex(
@@ -171,13 +196,20 @@ async function projectQuota(
     const next = {
       ...row,
       termCode: data.term.termCode,
+      nextRefreshAt: null,
+      staleSince: null,
+      lastAttemptedAt: new Date().toISOString(),
       lastRefreshStatus: "succeeded",
       updatedAt: new Date().toISOString(),
     };
     try {
       const result = current
         ? await latest.updateOne(
-            { ...key, observedAt: current.observedAt ?? null },
+            {
+              ...key,
+              observedAt: current.observedAt ?? null,
+              lastAttemptedAt: current.lastAttemptedAt ?? null,
+            },
             { $set: next },
           )
         : await latest.updateOne(key, { $setOnInsert: next }, { upsert: true });
@@ -226,12 +258,13 @@ async function stageResource(
   batchId: string,
   previous: string | null,
   at: string,
+  override?: { rows: Document[]; retirePriorIds: Set<string> },
 ): Promise<void> {
   const collection = db.collection(collections[name]);
   const key = { source: data.source, termCode: data.term.termCode };
   const id = identities[name];
   const incoming = new Map<string, Document>();
-  for (const row of data[name])
+  for (const row of override?.rows ?? data[name])
     incoming.set(String(row[id as keyof typeof row]), row);
   const last = previous
     ? await collection.find({ ...key, importBatchId: previous }).toArray()
@@ -241,7 +274,8 @@ async function stageResource(
     if (incoming.has(priorId)) continue;
     const { _id, importBatchId, ...copy } = prior;
     const retiredAt =
-      data.resourceCoverage[name] === "complete"
+      data.resourceCoverage[name] === "complete" ||
+      override?.retirePriorIds.has(priorId)
         ? (prior.retiredAt ?? at)
         : prior.retiredAt;
     await collection.updateOne(
@@ -263,6 +297,7 @@ async function stageResource(
         $setOnInsert: {
           ...row,
           ...key,
+          ...(name === "bundles" ? { bindingSource: row.source } : {}),
           importBatchId: batchId,
           retiredAt: null,
           updatedAt: at,
@@ -274,6 +309,105 @@ async function stageResource(
       { upsert: true },
     );
   }
+}
+
+function sameSectionStructure(a: Document, b: Document): boolean {
+  return (
+    a.sectionId === b.sectionId &&
+    a.offeringId === b.offeringId &&
+    a.classNbr === b.classNbr &&
+    a.sectionCode === b.sectionCode &&
+    a.componentType === b.componentType &&
+    a.associatedClass === b.associatedClass &&
+    isDeepStrictEqual(a.meetings, b.meetings)
+  );
+}
+
+async function reconcileVerifiedBundles(
+  db: Db,
+  data: CourseData,
+  previous: string | null,
+): Promise<{
+  rows: Bundle[];
+  retired: Set<string>;
+  warnings: string[];
+  priorVerifiedCount: number;
+}> {
+  const rows = [...data.bundles];
+  const retired = new Set<string>();
+  const warnings: string[] = [];
+  if (!previous) return { rows, retired, warnings, priorVerifiedCount: 0 };
+  const key = {
+    source: data.source,
+    termCode: data.term.termCode,
+    importBatchId: previous,
+    retiredAt: null,
+  };
+  const [priorSections, priorOfferings, priorBundles] = await Promise.all([
+    db.collection("classSections").find(key).toArray(),
+    db.collection("courseOfferings").find(key).toArray(),
+    db
+      .collection("sectionBundles")
+      .find(key, { projection: { _id: 0 } })
+      .toArray(),
+  ]);
+  const effective = (name: "sections" | "offerings", prior: Document[]) => {
+    const id = identities[name];
+    const entries =
+      data.resourceCoverage[name] === "complete"
+        ? []
+        : prior.map((row) => [String(row[id]), row] as const);
+    const result = new Map<string, Document>(entries);
+    for (const row of data[name])
+      result.set(String((row as Document)[id]), row);
+    return result;
+  };
+  const sections = effective("sections", priorSections);
+  const offerings = effective("offerings", priorOfferings);
+  const oldSections = new Map(priorSections.map((row) => [row.sectionId, row]));
+  const incomingIds = new Set(rows.map((row) => row.bundleId));
+  const overrides = new Set(data.bindingOverrides ?? []);
+  let priorVerifiedCount = 0;
+  for (const prior of priorBundles) {
+    const operatorVerified =
+      prior.bindingSource === "operator-verified" ||
+      (prior.bindingSource == null && Boolean(prior.bindingEvidence));
+    if (operatorVerified) priorVerifiedCount++;
+    if (incomingIds.has(prior.bundleId)) continue;
+    const ids = (prior.componentClassNbrs as string[]).map(
+      (nbr) => `${prior.offeringId}:${encodeURIComponent(nbr)}`,
+    );
+    const valid =
+      !overrides.has(prior.offeringId) &&
+      offerings.has(prior.offeringId) &&
+      ids.every(
+        (id) =>
+          oldSections.has(id) &&
+          sections.has(id) &&
+          sameSectionStructure(oldSections.get(id)!, sections.get(id)!),
+      );
+    if (!valid) {
+      retired.add(prior.bundleId);
+      warnings.push(
+        `${operatorVerified ? "VERIFIED_BINDING" : "BINDING"}_RETIRED:${prior.bundleId}`,
+      );
+      continue;
+    }
+    if (!operatorVerified) continue;
+    rows.push({
+      bundleId: prior.bundleId,
+      offeringId: prior.offeringId,
+      leadClassNbr: prior.leadClassNbr,
+      componentClassNbrs: prior.componentClassNbrs,
+      componentTypes: prior.componentTypes,
+      sectionLabels: prior.sectionLabels,
+      bindingGroup: prior.bindingGroup,
+      derivedSchedule: prior.derivedSchedule,
+      source: "operator-verified",
+      bindingEvidence: prior.bindingEvidence,
+    });
+  }
+  return { rows, retired, warnings, priorVerifiedCount };
 }
 
 async function validateStaging(
@@ -386,10 +520,12 @@ export async function loadBatch(
     const priorRun = previous
       ? await runs.findOne({ importBatchId: previous })
       : null;
+    const verified = await reconcileVerifiedBundles(db, data, previous);
     const baseline = {
       ...(priorRun?.lastCompleteSourceCounts ?? {}),
     } as Record<string, number>;
     for (const name of resources) {
+      if (name === "bundles") continue;
       if (data.resourceCoverage[name] !== "complete") continue;
       const count = data[name].length;
       const last = baseline[name];
@@ -401,6 +537,22 @@ export async function loadBatch(
         throw new Error(`SUSPICIOUS_${name.toUpperCase()}_DROP`);
       baseline[name] = count;
     }
+    const providerBundleCount = data.bundles.filter(
+      (row) => row.source !== "operator-verified",
+    ).length;
+    const priorProviderBundleCount =
+      (priorRun?.lastCompleteProviderBundleCount as number | undefined) ??
+      Math.max(0, (baseline.bundles ?? 0) - verified.priorVerifiedCount);
+    if (
+      data.resourceCoverage.bundles === "complete" &&
+      priorProviderBundleCount &&
+      providerBundleCount <
+        priorProviderBundleCount * (1 - (options.maxDropFraction ?? 0.5)) &&
+      !options.allowDestructiveReconciliation
+    )
+      throw new Error("SUSPICIOUS_BUNDLES_DROP");
+    if (data.resourceCoverage.bundles === "complete")
+      baseline.bundles = verified.rows.length;
     const metadata =
       data.termMetadataCoverage === "unavailable" && previous
         ? (priorRun?.termMetadataSnapshot ?? data.term)
@@ -411,6 +563,12 @@ export async function loadBatch(
               providerCurrent: data.term.providerCurrent ?? false,
               providerSelectable: data.term.providerSelectable ?? false,
             };
+    if (
+      data.termMetadataCoverage === "complete" &&
+      typeof data.term.providerCurrent === "boolean" &&
+      typeof data.term.providerSelectable === "boolean"
+    )
+      metadata.providerSignalsObservedAt = data.generatedAt;
     const at = new Date().toISOString();
     await runs.updateOne(
       { importBatchId: batchId },
@@ -428,20 +586,37 @@ export async function loadBatch(
           termMetadataCoverage: data.termMetadataCoverage,
           resourceCoverage: data.resourceCoverage,
           resourceCounts: Object.fromEntries(
-            resources.map((name) => [name, data[name].length]),
+            resources.map((name) => [
+              name,
+              name === "bundles" ? verified.rows.length : data[name].length,
+            ]),
           ),
           lastCompleteSourceCounts: baseline,
+          lastCompleteProviderBundleCount:
+            data.resourceCoverage.bundles === "complete"
+              ? providerBundleCount
+              : priorProviderBundleCount,
           pageTotals: data.pageTotals ?? {},
           startedAt: at,
           recordsRead: data.sourceRecordCount,
-          warnings: data.warnings ?? [],
+          warnings: [...(data.warnings ?? []), ...verified.warnings],
           errors: [],
         },
       },
       { upsert: true },
     );
     for (const name of resources)
-      await stageResource(db, data, name, batchId, previous, at);
+      await stageResource(
+        db,
+        data,
+        name,
+        batchId,
+        previous,
+        at,
+        name === "bundles"
+          ? { rows: verified.rows, retirePriorIds: verified.retired }
+          : undefined,
+      );
     for (const row of data.quotaSnapshots)
       await db
         .collection("importQuotaStaging")
@@ -487,7 +662,9 @@ export async function loadBatch(
         $set: {
           status: "activated",
           recordsWritten: resources.reduce(
-            (sum, name) => sum + data[name].length,
+            (sum, name) =>
+              sum +
+              (name === "bundles" ? verified.rows.length : data[name].length),
             0,
           ),
         },

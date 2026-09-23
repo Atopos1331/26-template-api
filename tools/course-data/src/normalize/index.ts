@@ -12,7 +12,11 @@ import {
   type RawCourse,
   type RawImport,
 } from "../providers/ust-schedule.ts";
-import { makeBundles } from "./bundle.ts";
+import {
+  makeBundles,
+  makeVerifiedBundles,
+  type VerifiedBindings,
+} from "./bundle.ts";
 import { parseUstTerm } from "./term.ts";
 
 const days: Record<string, string> = {
@@ -49,7 +53,10 @@ function requirement(value: string | null | undefined): string[] {
   return value?.trim() ? [value.trim()] : [];
 }
 
-export function normalize(raw: RawImport): CourseData {
+export function normalize(
+  raw: RawImport,
+  bindings?: VerifiedBindings,
+): CourseData {
   if (
     raw.source !== "ust-class-schedule" ||
     !Array.isArray(raw.pages) ||
@@ -59,7 +66,26 @@ export function normalize(raw: RawImport): CourseData {
   )
     throw new Error("RAW_INPUT_INVALID");
   const generatedAt = new Date(raw.fetchedAt).toISOString();
-  const term = parseUstTerm(raw.termCode);
+  const term = parseUstTerm(raw.termCode, raw.termSignals);
+  if (
+    bindings &&
+    (!Array.isArray(bindings.offerings) ||
+      bindings.offerings.some(
+        (entry) =>
+          !entry ||
+          typeof entry.courseCode !== "string" ||
+          typeof entry.evidence !== "string" ||
+          !Array.isArray(entry.combinations) ||
+          entry.combinations.some(
+            (combination) =>
+              !Array.isArray(combination) ||
+              combination.some((number) => typeof number !== "string"),
+          ),
+      ))
+  )
+    throw new Error("BINDING_INPUT_INVALID");
+  if (bindings && bindings.termCode !== raw.termCode)
+    throw new Error("BINDING_TERM_MISMATCH");
   const selected = raw.subjectFilter ? [raw.subjectFilter] : raw.subjects;
   const complete = !raw.subjectFilter && raw.subjects.length > 0;
   const seenPages = new Set<string>();
@@ -223,20 +249,42 @@ export function normalize(raw: RawImport): CourseData {
       }
     }
   }
+  const remainingBindings = new Map(
+    bindings?.offerings.map((entry) => [entry.courseCode, entry]) ?? [],
+  );
+  if (remainingBindings.size !== (bindings?.offerings.length ?? 0))
+    throw new Error("BINDING_OFFERING_DUPLICATE");
+  const bindingOverrides: string[] = [];
   const bundles = offerings.flatMap((offering) => {
+    const binding = remainingBindings.get(offering.courseId);
+    if (binding) {
+      if (
+        offerings.filter((row) => row.courseId === offering.courseId).length !==
+        1
+      )
+        throw new Error("BINDING_OFFERING_AMBIGUOUS");
+      remainingBindings.delete(offering.courseId);
+      bindingOverrides.push(offering.offeringId);
+      return makeVerifiedBundles(
+        sections.filter((row) => row.offeringId === offering.offeringId),
+        binding.combinations,
+        binding.evidence,
+      );
+    }
     const result = makeBundles(
       sections.filter((row) => row.offeringId === offering.offeringId),
     );
     warnings.push(...result.warnings);
     return result.bundles;
   });
+  if (remainingBindings.size) throw new Error("BINDING_OFFERING_NOT_FOUND");
   const coverage = complete ? "complete" : "partial";
   const data: CourseData = {
     schemaVersion: "course-data-v1",
     source: raw.source,
     term,
     generatedAt,
-    termMetadataCoverage: "unavailable",
+    termMetadataCoverage: raw.termSignals ? "complete" : "unavailable",
     isCompleteSnapshot: complete,
     sourceRecordCount: records.length,
     pageTotals: raw.pageTotals,
@@ -250,6 +298,7 @@ export function normalize(raw: RawImport): CourseData {
     offerings,
     sections,
     bundles,
+    ...(bindingOverrides.length ? { bindingOverrides } : {}),
     quotaSnapshots,
     warnings,
   };

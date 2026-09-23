@@ -1,5 +1,14 @@
 import type { Bundle, Meeting, Section } from "../contract.ts";
 
+export type VerifiedBindings = {
+  termCode: string;
+  offerings: Array<{
+    courseCode: string;
+    evidence: string;
+    combinations: string[][];
+  }>;
+};
+
 function overlaps(a: Meeting, b: Meeting): boolean {
   if (a.endDate && b.startDate && a.endDate < b.startDate) return false;
   if (b.endDate && a.startDate && b.endDate < a.startDate) return false;
@@ -84,4 +93,40 @@ export function makeBundles(sections: Section[]): {
     }
   }
   return { bundles, warnings };
+}
+
+export function makeVerifiedBundles(
+  sections: Section[],
+  combinations: string[][],
+  evidence: string,
+): Bundle[] {
+  if (!evidence.trim()) throw new Error("BINDING_EVIDENCE_REQUIRED");
+  if (!combinations.length) return [];
+  if (!sections.length) throw new Error("BINDING_COMBINATION_INVALID");
+  const byNumber = new Map(sections.map((row) => [row.classNbr, row]));
+  const types = new Set(sections.map((row) => row.componentType));
+  const seen = new Set<string>();
+  return combinations.map((numbers, index) => {
+    const selected = numbers.map((number) => byNumber.get(number));
+    const identity = [...numbers].sort().join("+");
+    if (
+      numbers.length !== types.size ||
+      new Set(numbers).size !== numbers.length ||
+      selected.some((row) => !row) ||
+      new Set(selected.map((row) => row?.componentType)).size !== types.size ||
+      seen.has(identity)
+    )
+      throw new Error("BINDING_COMBINATION_INVALID");
+    seen.add(identity);
+    const result = makeBundles(
+      selected.map((row) => ({ ...row!, associatedClass: String(index + 1) })),
+    );
+    if (result.bundles.length !== 1)
+      throw new Error("BINDING_COMBINATION_CONFLICT");
+    return {
+      ...result.bundles[0]!,
+      source: "operator-verified",
+      bindingEvidence: evidence.trim(),
+    };
+  });
 }

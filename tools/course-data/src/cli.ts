@@ -4,6 +4,7 @@ import { MongoClient } from "mongodb";
 import type { CourseData } from "./contract.ts";
 import { validate } from "./contract.ts";
 import { BoundedClient } from "./fetch/client.ts";
+import type { VerifiedBindings } from "./normalize/bundle.ts";
 import { normalize } from "./normalize/index.ts";
 import { loadBatch, rollbackBatch } from "./output/mongo-loader.ts";
 import { fetchTerm, type RawImport } from "./providers/ust-schedule.ts";
@@ -20,6 +21,11 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 
 async function readJson(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, "utf8"));
+}
+
+async function bindings(): Promise<VerifiedBindings | undefined> {
+  const path = option("bindings");
+  return path ? ((await readJson(path)) as VerifiedBindings) : undefined;
 }
 
 async function withDatabase<T>(
@@ -59,7 +65,7 @@ async function main(): Promise<void> {
       console.log(JSON.stringify({ subjects: raw.pages.length, rawPath }));
       return;
     }
-    const data = normalize(raw);
+    const data = normalize(raw, await bindings());
     const batchId = await withDatabase((connection) =>
       loadBatch(connection.db(databaseName()), data, {
         trigger: "scheduled",
@@ -81,7 +87,10 @@ async function main(): Promise<void> {
   if (command === "normalize") {
     const input = option("input");
     if (!input) throw new Error("INPUT_REQUIRED");
-    const data = normalize((await readJson(input)) as RawImport);
+    const data = normalize(
+      (await readJson(input)) as RawImport,
+      await bindings(),
+    );
     const output = resolve(
       option("output") ??
         `data/normalized/${data.term.termCode}-${Date.now()}.json`,
@@ -127,6 +136,9 @@ async function main(): Promise<void> {
       sections,
       bundles: data.bundles.filter(
         (row) => row.offeringId === first.offeringId,
+      ),
+      bindingOverrides: data.bindingOverrides?.filter(
+        (id) => id === first.offeringId,
       ),
       quotaSnapshots: data.quotaSnapshots.filter((row) =>
         ids.has(row.sectionId),

@@ -34,6 +34,19 @@ describe("UST source normalization", () => {
     expect(() => parseUstTerm("2590")).toThrow("TERM_CODE_INVALID");
   });
 
+  test("keeps optional legacy term signals without inferring availability", () => {
+    const input = {
+      ...raw(),
+      termSignals: { current: false, selectable: false },
+    };
+    expect(normalize(input).termMetadataCoverage).toBe("complete");
+    expect(normalize(input).term.providerSelectable).toBe(false);
+    expect(
+      normalize({ ...raw(), termSignals: { current: true, selectable: true } })
+        .term.providerCurrent,
+    ).toBe(true);
+  });
+
   test("preserves page fields and missing dates without placeholder meetings", () => {
     expect(listSubjects(html, "2530")).toEqual(["COMP"]);
     expect(parseCoursePage(html)[0]?.sections).toHaveLength(3);
@@ -145,6 +158,107 @@ describe("UST source normalization", () => {
     expect(makeBundles(overlapping).bundles).toHaveLength(0);
   });
 
+  test("accepts only evidenced exact combinations for unknown bindings", () => {
+    const verified = normalize(raw(), {
+      termCode: "2530",
+      offerings: [
+        {
+          courseCode: "COMP2611",
+          evidence: "Registrar rules, 2026-09-23",
+          combinations: [["12345", "12346", "12347"]],
+        },
+      ],
+    });
+    expect(verified.bundles).toHaveLength(1);
+    expect(verified.bundles[0]?.source).toBe("operator-verified");
+    expect(verified.bundles[0]?.bindingEvidence).toContain("Registrar");
+    expect(() =>
+      validate({
+        ...verified,
+        bundles: [{ ...verified.bundles[0]!, bindingEvidence: undefined }],
+      }),
+    ).toThrow("BINDING_EVIDENCE_REQUIRED");
+    expect(() =>
+      validate({
+        ...verified,
+        bundles: [
+          { ...verified.bundles[0]!, sectionLabels: ["L9", "LA1", "T2"] },
+        ],
+      }),
+    ).toThrow("BUNDLE_STRUCTURE_INVALID");
+    validate({
+      ...verified,
+      bundles: [
+        {
+          ...verified.bundles[0]!,
+          derivedSchedule: {
+            meetings: verified.bundles[0]!.derivedSchedule.meetings.map(
+              ({ timezone, ...meeting }) => ({ timezone, ...meeting }),
+            ),
+          },
+        },
+      ],
+    });
+    expect(() =>
+      validate({
+        ...verified,
+        bundles: [
+          { ...verified.bundles[0]!, derivedSchedule: { meetings: [] } },
+        ],
+      }),
+    ).toThrow("BUNDLE_STRUCTURE_INVALID");
+    const revoked = normalize(raw(), {
+      termCode: "2530",
+      offerings: [
+        {
+          courseCode: "COMP2611",
+          evidence: "Registrar revocation checked 2026-09-23",
+          combinations: [],
+        },
+      ],
+    });
+    expect(revoked.bundles).toEqual([]);
+    expect(revoked.bindingOverrides).toEqual([
+      verified.offerings[0]!.offeringId,
+    ]);
+    expect(() =>
+      normalize(raw(), {
+        termCode: "2530",
+        offerings: [
+          {
+            courseCode: "COMP2611",
+            evidence: "",
+            combinations: [["12345", "12346", "12347"]],
+          },
+        ],
+      }),
+    ).toThrow("BINDING_EVIDENCE_REQUIRED");
+    expect(() =>
+      normalize(raw(), {
+        termCode: "2530",
+        offerings: [
+          {
+            courseCode: "COMP2611",
+            evidence: "Registrar",
+            combinations: [["12345", "12346"]],
+          },
+        ],
+      }),
+    ).toThrow("BINDING_COMBINATION_INVALID");
+    expect(() =>
+      normalize(raw(), {
+        termCode: "2530",
+        offerings: [
+          {
+            courseCode: "COMP2611",
+            evidence: "Registrar",
+            combinations: [["12345", "99999", "12347"]],
+          },
+        ],
+      }),
+    ).toThrow("BINDING_COMBINATION_INVALID");
+  });
+
   test("keeps UG and PG offering identities distinct", () => {
     const base = normalize(raw());
     const course = base.courses[0]!;
@@ -246,6 +360,7 @@ describe("bounded fetch", () => {
     });
     const result = await fetchTerm(client, "2530", "COMP");
     expect(result.pageTotals.COMP).toBe(2);
+    expect(result.termSignals).toBeUndefined();
     expect(result.pages.map((page) => page.page)).toEqual([1, 2]);
     const unsafe = new BoundedClient({
       retries: 0,

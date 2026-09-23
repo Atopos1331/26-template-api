@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import Ajv from "ajv";
 import schema from "../../../contracts/course-data-v1.schema.json";
 
@@ -78,6 +79,7 @@ export type Bundle = {
   bindingGroup: string | null;
   derivedSchedule: { meetings: Meeting[] };
   source: string;
+  bindingEvidence?: string;
 };
 export type Quota = {
   snapshotId: string;
@@ -105,6 +107,7 @@ export type CourseData = {
   offerings: Offering[];
   sections: Section[];
   bundles: Bundle[];
+  bindingOverrides?: string[];
   quotaSnapshots: Quota[];
   warnings?: string[];
 };
@@ -170,12 +173,15 @@ export function validate(input: unknown): asserts input is CourseData {
     data.bundles.map((row) => row.bundleId),
     "BUNDLE",
   );
+  unique(data.bindingOverrides ?? [], "BINDING_OVERRIDE");
   unique(
     data.quotaSnapshots.map((row) => row.snapshotId),
     "QUOTA",
   );
   const courses = new Set(data.courses.map((row) => row.courseId));
   const offerings = new Map(data.offerings.map((row) => [row.offeringId, row]));
+  if (data.bindingOverrides?.some((id) => !offerings.has(id)))
+    throw new Error("BINDING_OVERRIDE_REFERENCE_INVALID");
   const sections = new Map(data.sections.map((row) => [row.sectionId, row]));
   for (const row of data.offerings) {
     if (
@@ -216,10 +222,26 @@ export function validate(input: unknown): asserts input is CourseData {
       row.componentTypes.length !== row.sectionLabels.length
     )
       throw new Error("BUNDLE_INVALID");
-    for (const nbr of row.componentClassNbrs) {
-      if (!sections.has(`${row.offeringId}:${encodeURIComponent(nbr)}`))
-        throw new Error("BUNDLE_REFERENCE_INVALID");
-    }
+    if (row.source === "operator-verified" && !row.bindingEvidence?.trim())
+      throw new Error("BINDING_EVIDENCE_REQUIRED");
+    const members = row.componentClassNbrs.map((nbr) =>
+      sections.get(`${row.offeringId}:${encodeURIComponent(nbr)}`),
+    );
+    if (members.some((section) => !section))
+      throw new Error("BUNDLE_REFERENCE_INVALID");
+    if (
+      new Set(row.componentClassNbrs).size !== row.componentClassNbrs.length ||
+      members.some(
+        (section, index) =>
+          section!.componentType !== row.componentTypes[index] ||
+          section!.sectionCode !== row.sectionLabels[index],
+      ) ||
+      !isDeepStrictEqual(
+        row.derivedSchedule.meetings,
+        members.flatMap((section) => section!.meetings),
+      )
+    )
+      throw new Error("BUNDLE_STRUCTURE_INVALID");
     if (
       row.bundleId !==
       `${row.offeringId}:${[...row.componentClassNbrs].sort().map(encodeURIComponent).join("+")}`

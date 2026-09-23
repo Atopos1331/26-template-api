@@ -28,6 +28,7 @@ export type AcademicSettings = {
   quotaTtlSeconds: number;
   cursorKey: string;
   cursorTtlSeconds: number;
+  currentTermCode?: string;
   now?: () => Date;
 };
 
@@ -106,6 +107,8 @@ const bundleFields = [
   "sectionLabels",
   "bindingGroup",
   "derivedSchedule",
+  "source",
+  "bindingEvidence",
 ];
 const quotaFields = [
   "snapshotId",
@@ -130,12 +133,14 @@ export class AcademicService {
   }
 
   private freshness(doc: Document | null, ttlSeconds: number): Freshness {
-    const asOf =
+    const observed =
       typeof doc?.lastSuccessfulImportAt === "string"
         ? doc.lastSuccessfulImportAt
         : typeof doc?.observedAt === "string"
           ? doc.observedAt
           : null;
+    const asOf =
+      observed && Number.isFinite(Date.parse(observed)) ? observed : null;
     const nextRefreshAt =
       typeof doc?.nextRefreshAt === "string"
         ? doc.nextRefreshAt
@@ -143,9 +148,7 @@ export class AcademicService {
           ? new Date(Date.parse(asOf) + ttlSeconds * 1000).toISOString()
           : null;
     const isStale =
-      !asOf ||
-      !Number.isFinite(Date.parse(asOf)) ||
-      Date.parse(asOf) + ttlSeconds * 1000 <= this.now().getTime();
+      !asOf || Date.parse(asOf) + ttlSeconds * 1000 <= this.now().getTime();
     return {
       asOf,
       isStale,
@@ -159,6 +162,16 @@ export class AcademicService {
       nextRefreshAt,
       state: isStale ? "stale" : "fresh",
     };
+  }
+
+  private aggregateFreshness(docs: Document[], ttlSeconds: number): Freshness {
+    const values = docs.map((doc) => this.freshness(doc, ttlSeconds));
+    values.sort(
+      (a, b) =>
+        (a.asOf ? Date.parse(a.asOf) : Number.NEGATIVE_INFINITY) -
+        (b.asOf ? Date.parse(b.asOf) : Number.NEGATIVE_INFINITY),
+    );
+    return values[0] ?? this.freshness(null, ttlSeconds);
   }
 
   private sign(value: string): string {
@@ -283,10 +296,8 @@ export class AcademicService {
       );
     terms.sort(
       (a, b) =>
-        Number(b.providerCurrent ?? false) -
-          Number(a.providerCurrent ?? false) ||
-        Number(b.providerSelectable ?? false) -
-          Number(a.providerSelectable ?? false) ||
+        Number(b.termCode === this.settings.currentTermCode) -
+          Number(a.termCode === this.settings.currentTermCode) ||
         Number(b.sortKey ?? 0) - Number(a.sortKey ?? 0) ||
         String(a.termCode).localeCompare(String(b.termCode)),
     );
@@ -299,13 +310,13 @@ export class AcademicService {
     const selected = terms.slice(start, start + limit + 1);
     const items = selected.map((term) => ({
       ...clean<Static<typeof TermSchema>>(term, termFields),
-      isCurrent: term.providerCurrent === true,
-      isSelectable: term.providerSelectable === true,
+      isCurrent: term.termCode === this.settings.currentTermCode,
+      isSelectable: true,
       freshness: this.freshness(term, this.settings.structureTtlSeconds),
     }));
     const lastItem = selected[Math.min(limit, selected.length) - 1];
-    const metaFreshness = this.freshness(
-      terms[0] ?? null,
+    const metaFreshness = this.aggregateFreshness(
+      selected.slice(0, limit),
       this.settings.structureTtlSeconds,
     );
     return this.page(
@@ -335,82 +346,146 @@ export class AcademicService {
       importBatchId: term.activeImportBatchId,
       retiredAt: null,
     };
-    const [courseRows, offerings, sections] = await Promise.all([
-      this.db.collection("courses").find(key).toArray(),
-      this.db.collection("courseOfferings").find(key).toArray(),
-      this.db
-        .collection("classSections")
-        .find(key, { projection: { offeringId: 1 } })
-        .toArray(),
-    ]);
-    const courses = new Map(courseRows.map((item) => [item.courseId, item]));
-    const counts = new Map<string, number>();
-    for (const row of sections)
-      counts.set(row.offeringId, (counts.get(row.offeringId) ?? 0) + 1);
     const filters = JSON.stringify({
       search: query.search ?? "",
       subject: query.subject ?? "",
       catalogNumber: query.catalogNumber ?? "",
     });
     const last = this.readCursor(query.cursor, "courses", termCode, filters);
-    const rows = offerings.flatMap((offering) => {
-      const course = courses.get(offering.courseId);
-      if (!course) return [];
-      if (
-        query.subject &&
-        String(course.subject).toUpperCase() !== query.subject
-      )
-        return [];
-      if (
-        query.catalogNumber &&
-        String(course.catalogNumber).toUpperCase() !== query.catalogNumber
-      )
-        return [];
-      if (
-        query.search &&
-        !`${course.courseCode} ${course.title}`
-          .toLocaleLowerCase()
-          .includes(query.search)
-      )
-        return [];
-      return [{ offering, course }];
-    });
-    rows.sort(
-      (a, b) =>
-        String(a.course.courseCode).localeCompare(
-          String(b.course.courseCode),
-        ) ||
-        String(a.offering.academicCareer).localeCompare(
-          String(b.offering.academicCareer),
-        ) ||
-        String(a.offering.offeringId).localeCompare(
-          String(b.offering.offeringId),
-        ),
+    const pipeline: Document[] = [
+      {
+        $match: {
+          ...key,
+          ...(query.subject ? { subject: query.subject } : {}),
+          ...(query.catalogNumber
+            ? { catalogNumber: query.catalogNumber }
+            : {}),
+        },
+      },
+    ];
+    if (query.search) {
+      const literal = query.search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      pipeline.push({
+        $match: {
+          $expr: {
+            $regexMatch: {
+              input: { $concat: ["$courseCode", " ", "$title"] },
+              regex: literal,
+              options: "i",
+            },
+          },
+        },
+      });
+    }
+    pipeline.push(
+      {
+        $lookup: {
+          from: "courseOfferings",
+          localField: "courseId",
+          foreignField: "courseId",
+          pipeline: [{ $match: key }],
+          as: "offering",
+        },
+      },
+      { $unwind: "$offering" },
     );
-    const position = (row: (typeof rows)[number]) =>
-      `${row.course.courseCode}\0${row.offering.academicCareer}\0${row.offering.offeringId}`;
-    const filtered = last ? rows.filter((row) => position(row) > last) : rows;
-    const selected = filtered.slice(0, query.limit + 1);
-    const items = selected.map(({ offering, course }) => ({
-      offeringId: offering.offeringId,
+    if (last) {
+      const parts = last.split("\0");
+      if (parts.length !== 3)
+        throw new AcademicError("invalid_cursor", 400, "Invalid cursor");
+      const [code, career, id] = parts;
+      pipeline.push({
+        $match: {
+          $or: [
+            { courseCode: { $gt: code } },
+            { courseCode: code, "offering.academicCareer": { $gt: career } },
+            {
+              courseCode: code,
+              "offering.academicCareer": career,
+              "offering.offeringId": { $gt: id },
+            },
+          ],
+        },
+      });
+    }
+    pipeline.push(
+      {
+        $sort: {
+          courseCode: 1,
+          "offering.academicCareer": 1,
+          "offering.offeringId": 1,
+        },
+      },
+      { $limit: query.limit + 1 },
+    );
+    const selected = await this.db
+      .collection("courses")
+      .aggregate(pipeline)
+      .toArray();
+    const visible = selected.slice(0, query.limit);
+    const sections = visible.length
+      ? await this.db
+          .collection("classSections")
+          .find(
+            {
+              ...key,
+              offeringId: {
+                $in: visible.map((row) => row.offering.offeringId),
+              },
+            },
+            { projection: { offeringId: 1, lastSuccessfulImportAt: 1 } },
+          )
+          .toArray()
+      : [];
+    const sectionsByOffering = new Map<string, Document[]>();
+    for (const row of sections) {
+      const group = sectionsByOffering.get(row.offeringId) ?? [];
+      group.push(row);
+      sectionsByOffering.set(row.offeringId, group);
+    }
+    const items = selected.map((course) => ({
+      offeringId: course.offering.offeringId,
       termCode,
       courseId: course.courseId,
       courseCode: course.courseCode,
       title: course.title,
       credits: course.credits ?? null,
-      academicCareer: offering.academicCareer,
-      sectionCount: counts.get(offering.offeringId) ?? 0,
-      latestUpdatedAt: offering.updatedAt ?? course.updatedAt ?? null,
-      freshness: this.freshness(offering, this.settings.structureTtlSeconds),
+      academicCareer: course.offering.academicCareer,
+      sectionCount:
+        sectionsByOffering.get(course.offering.offeringId)?.length ?? 0,
+      latestUpdatedAt: course.offering.updatedAt ?? course.updatedAt ?? null,
+      freshness: this.aggregateFreshness(
+        [
+          course.offering,
+          course,
+          ...(sectionsByOffering.get(course.offering.offeringId) ?? []),
+        ],
+        this.settings.structureTtlSeconds,
+      ),
     }));
-    const lastRow = selected[Math.min(query.limit, selected.length) - 1];
+    const lastRow = visible.at(-1);
     return this.page(
       items,
       query.limit,
       lastRow
-        ? this.cursor("courses", termCode, filters, position(lastRow))
+        ? this.cursor(
+            "courses",
+            termCode,
+            filters,
+            `${lastRow.courseCode}\0${lastRow.offering.academicCareer}\0${lastRow.offering.offeringId}`,
+          )
         : null,
-      this.freshness(term, this.settings.structureTtlSeconds),
+      this.aggregateFreshness(
+        [
+          term,
+          ...visible.flatMap((course) => [
+            course.offering,
+            course,
+            ...(sectionsByOffering.get(course.offering.offeringId) ?? []),
+          ]),
+        ],
+        this.settings.structureTtlSeconds,
+      ),
     );
   }
 
@@ -436,7 +511,7 @@ export class AcademicService {
 
   async getOffering(offeringId: string) {
     const { term, offering, key } = await this.activeOffering(offeringId);
-    const [course, sections] = await Promise.all([
+    const [course, sections, bundleCount] = await Promise.all([
       this.db
         .collection("courses")
         .findOne({ ...key, courseId: offering.courseId }),
@@ -445,6 +520,9 @@ export class AcademicService {
         .find({ ...key, offeringId })
         .sort({ sectionCode: 1, sectionId: 1 })
         .toArray(),
+      this.db
+        .collection("sectionBundles")
+        .countDocuments({ ...key, offeringId }),
     ]);
     if (!course)
       throw new AcademicError(
@@ -455,14 +533,19 @@ export class AcademicService {
     return {
       data: {
         ...clean<Static<typeof OfferingSchema>>(offering, offeringFields),
+        bundleAvailability: bundleCount
+          ? ("available" as const)
+          : new Set(sections.map((row) => row.componentType)).size > 1
+            ? ("unverified_binding" as const)
+            : ("none" as const),
         course: clean<Static<typeof OfferingSchema>["course"]>(
           course,
           courseFields,
         ),
         term: {
           ...clean<Static<typeof TermSchema>>(term, termFields),
-          isCurrent: term.providerCurrent === true,
-          isSelectable: term.providerSelectable === true,
+          isCurrent: term.termCode === this.settings.currentTermCode,
+          isSelectable: true,
         },
         sections: sections.map((row) =>
           clean<Static<typeof OfferingSchema>["sections"][number]>(
@@ -472,13 +555,16 @@ export class AcademicService {
         ),
       },
       meta: {
-        freshness: this.freshness(offering, this.settings.structureTtlSeconds),
+        freshness: this.aggregateFreshness(
+          [term, offering, course, ...sections],
+          this.settings.structureTtlSeconds,
+        ),
       },
     };
   }
 
   async listBundles(offeringId: string) {
-    const { offering, key } = await this.activeOffering(offeringId);
+    const { term, offering, key } = await this.activeOffering(offeringId);
     const rows = await this.db
       .collection("sectionBundles")
       .find({ ...key, offeringId })
@@ -487,12 +573,15 @@ export class AcademicService {
     return {
       items: rows.map((row) => ({
         ...clean<Static<typeof BundleSchema>>(row, bundleFields),
+        source:
+          row.bindingSource ??
+          (row.bindingEvidence ? "operator-verified" : "derived"),
         freshness: this.freshness(row, this.settings.structureTtlSeconds),
       })),
       page: { nextCursor: null, hasMore: false },
       meta: {
-        freshness: this.freshness(
-          rows[0] ?? offering,
+        freshness: this.aggregateFreshness(
+          [term, offering, ...rows],
           this.settings.structureTtlSeconds,
         ),
       },

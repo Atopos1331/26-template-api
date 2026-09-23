@@ -35,13 +35,14 @@ afterAll(async () => {
   await mongod?.stop();
 });
 
-async function buildApp() {
+async function buildApp(currentTermCode?: string) {
   const app = Fastify({ pluginTimeout: 300_000 });
   await app.register(fp(App), {
     mongoUri: mongod.getUri(`academic-${randomUUID()}`),
     mongoTestUri: undefined,
     authSkip: false,
     cursorSigningKey: "test-signing-key-with-at-least-32-bytes",
+    academicCurrentTermCode: currentTermCode,
   });
   await app.ready();
   return app;
@@ -62,6 +63,7 @@ async function seed(db: Db) {
     timezone: "Asia/Hong_Kong",
     providerCurrent: true,
     providerSelectable: true,
+    providerSignalsObservedAt: new Date().toISOString(),
     lastSuccessfulImportAt: timestamp,
   });
   for (const batch of ["active", "staged"]) {
@@ -239,7 +241,7 @@ test("HTTP quota source retries transient errors and bounds response size", asyn
 });
 
 test("academic routes enforce auth and read one active batch", async () => {
-  const app = await buildApp();
+  const app = await buildApp(termCode);
   try {
     expect(
       (await app.inject({ url: `/terms/${termCode}/courses`, headers: auth }))
@@ -257,6 +259,7 @@ test("academic routes enforce auth and read one active batch", async () => {
     });
     expect(first.statusCode).toBe(200);
     expect(first.json().items[0].title).toBe("Computer Organization");
+    expect(first.json().items[0].sectionCount).toBe(1);
     expect(first.json().page.hasMore).toBe(true);
     const cursor = first.json().page.nextCursor;
     const next = await app.inject({
@@ -264,6 +267,7 @@ test("academic routes enforce auth and read one active batch", async () => {
       headers: auth,
     });
     expect(next.json().items[0].courseCode).toBe("COMP2612");
+    expect(next.json().items[0].sectionCount).toBe(0);
     const changedFilter = await app.inject({
       url: `/terms/${termCode}/courses?cursor=${encodeURIComponent(cursor)}&subject=MATH`,
       headers: auth,
@@ -281,6 +285,24 @@ test("academic routes enforce auth and read one active batch", async () => {
       headers: auth,
     });
     expect(bundles.json().items).toHaveLength(1);
+    expect(bundles.json().items[0].source).toBe("derived");
+    await app.mongo.db!.collection("sectionBundles").updateOne(
+      { offeringId, importBatchId: "active" },
+      {
+        $set: {
+          bindingSource: "operator-verified",
+          bindingEvidence: "Registrar check",
+        },
+      },
+    );
+    const verifiedBundles = await app.inject({
+      url: `/offerings/${offeringId}/bundles`,
+      headers: auth,
+    });
+    expect(verifiedBundles.json().items[0]).toMatchObject({
+      source: "operator-verified",
+      bindingEvidence: "Registrar check",
+    });
     const filtered = await app.inject({
       url: `/terms/${termCode}/courses?subject=COMP&catalogNumber=2612&search=algo`,
       headers: auth,
@@ -306,6 +328,16 @@ test("academic routes enforce auth and read one active batch", async () => {
       headers: auth,
     });
     expect(stagedSearch.json().items).toHaveLength(1);
+    const literalSearch = await app.inject({
+      url: `/terms/${termCode}/courses?search=2611%20computer`,
+      headers: auth,
+    });
+    expect(literalSearch.json().items).toHaveLength(0);
+    const punctuation = await app.inject({
+      url: `/terms/${termCode}/courses?search=comp.`,
+      headers: auth,
+    });
+    expect(punctuation.json().items).toHaveLength(0);
     expect(
       (await app.inject({ url: "/terms/2630/courses", headers: auth }))
         .statusCode,
@@ -314,6 +346,225 @@ test("academic routes enforce auth and read one active batch", async () => {
     expect(
       Object.keys(openapi.paths).some((path) => path.includes("refresh")),
     ).toBe(false);
+  } finally {
+    await app.close();
+  }
+});
+
+test("mixed batches expose stale resources in page and offering metadata", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    const old = "2026-09-20T10:00:00.000Z";
+    await db
+      .collection("courseOfferings")
+      .updateOne(
+        { offeringId, importBatchId: "active" },
+        { $set: { lastSuccessfulImportAt: old } },
+      );
+    await db
+      .collection("classSections")
+      .updateOne(
+        { sectionId, importBatchId: "active" },
+        { $set: { lastSuccessfulImportAt: old } },
+      );
+    await db
+      .collection("sectionBundles")
+      .updateOne(
+        { offeringId, importBatchId: "active" },
+        { $set: { lastSuccessfulImportAt: old } },
+      );
+    const api = service(db, () => new Date("2026-09-23T10:01:00.000Z"));
+    expect(
+      (await api.listCourses(termCode, { limit: 10 })).meta.freshness.isStale,
+    ).toBe(true);
+    await db
+      .collection("courseOfferings")
+      .updateOne(
+        { offeringId, importBatchId: "active" },
+        { $set: { lastSuccessfulImportAt: timestamp } },
+      );
+    const page = await api.listCourses(termCode, { limit: 10 });
+    expect(page.items[0]?.freshness.isStale).toBe(true);
+    expect(page.meta.freshness.isStale).toBe(true);
+    expect((await api.getOffering(offeringId)).meta.freshness.isStale).toBe(
+      true,
+    );
+    expect((await api.listBundles(offeringId)).meta.freshness.isStale).toBe(
+      true,
+    );
+    const terms = await api.listTerms(10);
+    expect(terms.meta.freshness.isStale).toBe(false);
+    await db
+      .collection("classSections")
+      .updateOne(
+        { sectionId, importBatchId: "active" },
+        { $set: { lastSuccessfulImportAt: "invalid-date" } },
+      );
+    const invalid = await api.listCourses(termCode, { limit: 10 });
+    expect(invalid.items[0]?.freshness).toMatchObject({
+      asOf: null,
+      isStale: true,
+    });
+    expect((await api.getOffering(offeringId)).meta.freshness.asOf).toBeNull();
+  } finally {
+    await app.close();
+  }
+});
+
+test("course cursor keeps offerings of the same course in order", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    await db.collection("courseOfferings").insertOne({
+      source: ACADEMIC_SOURCE,
+      termCode,
+      importBatchId: "active",
+      retiredAt: null,
+      lastSuccessfulImportAt: timestamp,
+      offeringId: `${ACADEMIC_SOURCE}:${termCode}:COMP2611:UG`,
+      courseId: "COMP2611",
+      academicCareer: "UG",
+    });
+    const api = service(db, () => new Date("2026-09-23T10:01:00.000Z"));
+    const first = await api.listCourses(termCode, {
+      limit: 1,
+      search: "computer",
+    });
+    expect(first.items.map((row) => row.academicCareer)).toEqual(["UG"]);
+    const second = await api.listCourses(termCode, {
+      limit: 1,
+      search: "computer",
+      cursor: first.page.nextCursor!,
+    });
+    expect(second.items.map((row) => row.academicCareer)).toEqual(["UNKNOWN"]);
+    expect(second.page.hasMore).toBe(false);
+  } finally {
+    await app.close();
+  }
+});
+
+test("historical and future terms with active batches remain selectable regardless of freshness", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    await db.collection("academicTerms").updateOne(
+      { source: ACADEMIC_SOURCE, termCode },
+      {
+        $set: {
+          providerSignalsObservedAt: "2026-09-20T10:00:00.000Z",
+          lastSuccessfulImportAt: "2026-09-23T10:00:00.000Z",
+        },
+      },
+    );
+    await db.collection("academicTerms").insertMany([
+      {
+        source: ACADEMIC_SOURCE,
+        termCode: "2610",
+        activeImportBatchId: "fall-active",
+        displayName: "2026-27 Fall",
+        sortKey: 202610,
+        lastSuccessfulImportAt: timestamp,
+      },
+      {
+        source: ACADEMIC_SOURCE,
+        termCode: "2730",
+        activeImportBatchId: "future-active",
+        displayName: "2027-28 Spring",
+        sortKey: 202730,
+        lastSuccessfulImportAt: timestamp,
+      },
+    ]);
+    const api = service(db, () => new Date("2026-09-23T10:01:00.000Z"));
+    const terms = await api.listTerms(10);
+    expect(terms.items.every((row) => !row.isCurrent && row.isSelectable)).toBe(
+      true,
+    );
+    expect(
+      terms.items.find((row) => row.termCode === termCode)?.freshness?.isStale,
+    ).toBe(false);
+    expect((await api.getOffering(offeringId)).data.term.isSelectable).toBe(
+      true,
+    );
+    const configured = new AcademicService(db, {
+      structureTtlSeconds: 86400,
+      quotaTtlSeconds: 900,
+      cursorKey: "test-signing-key-with-at-least-32-bytes",
+      cursorTtlSeconds: 900,
+      currentTermCode: "2610",
+      now: () => new Date("2026-09-23T10:01:00.000Z"),
+    });
+    const ordered = await configured.listTerms(10);
+    expect(ordered.items[0]?.termCode).toBe("2610");
+    expect(ordered.items[0]?.isCurrent).toBe(true);
+    expect(
+      ordered.items.slice(1).every((row) => row.isSelectable && !row.isCurrent),
+    ).toBe(true);
+    await db.collection("academicTerms").updateOne(
+      { source: ACADEMIC_SOURCE, termCode },
+      {
+        $set: {
+          activeImportBatchId: "staged",
+          lastSuccessfulImportAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    );
+    expect((await api.getOffering(offeringId)).data.term.isSelectable).toBe(
+      true,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("unverified multi-component offerings remain visible without selectable bundles", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    await db
+      .collection("sectionBundles")
+      .deleteMany({ offeringId, importBatchId: "active" });
+    await db.collection("classSections").insertOne({
+      source: ACADEMIC_SOURCE,
+      termCode,
+      importBatchId: "active",
+      retiredAt: null,
+      lastSuccessfulImportAt: timestamp,
+      offeringId,
+      sectionId: `${offeringId}:12346`,
+      classNbr: "12346",
+      sectionCode: "LA1",
+      componentType: "LAB",
+      associatedClass: null,
+      meetings: [],
+    });
+    const response = await app.inject({
+      url: `/offerings/${offeringId}`,
+      headers: auth,
+    });
+    expect(response.json().data.bundleAvailability).toBe("unverified_binding");
+    expect(response.json().data.sections).toHaveLength(2);
+    const bundles = await app.inject({
+      url: `/offerings/${offeringId}/bundles`,
+      headers: auth,
+    });
+    expect(bundles.json().items).toEqual([]);
+    await db
+      .collection("classSections")
+      .updateMany({ offeringId, importBatchId: "active" }, [
+        { $set: { associatedClass: "$classNbr" } },
+      ]);
+    const incomplete = await app.inject({
+      url: `/offerings/${offeringId}`,
+      headers: auth,
+    });
+    expect(incomplete.json().data.bundleAvailability).toBe(
+      "unverified_binding",
+    );
   } finally {
     await app.close();
   }

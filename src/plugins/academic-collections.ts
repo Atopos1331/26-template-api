@@ -108,6 +108,26 @@ export async function initializeAcademicCollections(
       { name: `${name}_active_batch` },
     );
   }
+  await courses.createIndex(
+    {
+      source: 1,
+      termCode: 1,
+      importBatchId: 1,
+      retiredAt: 1,
+      subject: 1,
+      catalogNumber: 1,
+      courseCode: 1,
+    },
+    { name: "courses_listing" },
+  );
+  await courseOfferings.createIndex(
+    { courseId: 1, source: 1, termCode: 1, importBatchId: 1, retiredAt: 1 },
+    { name: "offerings_by_course_batch" },
+  );
+  await classSections.createIndex(
+    { source: 1, termCode: 1, importBatchId: 1, retiredAt: 1, offeringId: 1 },
+    { name: "sections_by_offering_batch" },
+  );
 
   const quotaSnapshots = db.collection<QuotaSnapshotDocument>("quotaSnapshots");
   await quotaSnapshots.createIndex(

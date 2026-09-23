@@ -34,6 +34,9 @@ Import a term with `tools/course-data` before reading `/terms`,
 `/offerings/:offeringId/bundles`. These authenticated routes read only the
 active import batch. Stale structural data is marked in `meta.freshness` and
 waits for the next operator-run import; an HTTP request never crawls a term.
+Every term with an active batch, including historical terms, is selectable
+for personal planning. `isCurrent` is true only for the optional
+`ACADEMIC_CURRENT_TERM_CODE`; without it, no term is marked current.
 
 `GET /sections/:sectionId/quota` returns the latest cached observation and
 queues one durable, deduplicated section refresh when it is stale. A missing
@@ -45,7 +48,8 @@ bun run worker:academic-refresh
 ```
 
 Use `bun run worker:academic-refresh --once` to process at most one job.
-The worker is not started by the API or Compose. Failed quota fetches back
+The worker is started as a separate Compose service. Outside Compose, start it
+with the command above. Failed quota fetches back
 off; permanent failures have a cooldown. There is no public refresh endpoint.
 
 ## Environment
@@ -70,6 +74,7 @@ development setup and uses a process-local signing key by default.
 | `CALENDAR_MAX_CONFLICTS` | Maximum conflict pairs, default 10000. |
 | `TIME_BANNER_UPCOMING_HOURS` | Banner lookahead, default 24 hours. |
 | `ACADEMIC_STRUCTURE_TTL_SECONDS` | Stale marker for imported term and structural records, default 86400. |
+| `ACADEMIC_CURRENT_TERM_CODE` | Optional actual ongoing UST term code (for example `2610`); only controls `isCurrent` and term ordering. |
 | `ACADEMIC_QUOTA_TTL_SECONDS` | Quota freshness lifetime, default 900. |
 | `ACADEMIC_QUOTA_MIN_INTERVAL_SECONDS` | Minimum time between successful quota refreshes, default 300. |
 | `REFRESH_FAILURE_COOLDOWN_SECONDS` | Permanent-failure cooldown and retry backoff cap, default 3600. |

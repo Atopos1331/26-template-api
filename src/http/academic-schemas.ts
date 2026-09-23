@@ -58,6 +58,11 @@ export const OfferingSchema = Type.Object(
     termCode: Type.String(),
     courseId: Type.String(),
     academicCareer: Type.String(),
+    bundleAvailability: Type.Union([
+      Type.Literal("available"),
+      Type.Literal("unverified_binding"),
+      Type.Literal("none"),
+    ]),
     course: Type.Object(
       {
         courseId: Type.String(),
@@ -91,6 +96,8 @@ export const BundleSchema = Type.Object(
     componentTypes: Type.Array(Type.String()),
     sectionLabels: Type.Array(Type.String()),
     derivedSchedule: Type.Object({ meetings: Type.Array(Type.Any()) }),
+    source: Type.String(),
+    bindingEvidence: Type.Union([Type.String(), Type.Null()]),
     freshness: FreshnessSchema,
   },
   { additionalProperties: true },

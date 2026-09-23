@@ -45,6 +45,7 @@
     "offerings": { "type": "array", "items": { "$ref": "#/$defs/offering" } },
     "sections": { "type": "array", "items": { "$ref": "#/$defs/section" } },
     "bundles": { "type": "array", "items": { "$ref": "#/$defs/bundle" } },
+    "bindingOverrides": { "type": "array", "items": { "type": "string" } },
     "quotaSnapshots": { "type": "array", "items": { "$ref": "#/$defs/quota" } },
     "warnings": { "type": "array", "items": { "type": "string" } }
   },
@@ -254,6 +255,7 @@
             }
           }
         },
+        "bindingEvidence": { "type": "string", "minLength": 1 },
         "source": { "type": "string" }
       }
     },

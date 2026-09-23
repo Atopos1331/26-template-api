@@ -5,6 +5,7 @@ import { load } from "cheerio";
 import { MongoClient } from "mongodb";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import type { CourseData } from "../src/contract.ts";
+import { makeBundles } from "../src/normalize/bundle.ts";
 import { normalize } from "../src/normalize/index.ts";
 import {
   ensureAcademicIndexes,
@@ -41,6 +42,32 @@ function batch(
     pageTotals: { COMP: 1 },
     pages: [{ subject: "COMP", page: 1, html: page }],
   });
+}
+
+function verifiedBatch(partial = false): CourseData {
+  const data = batch(false, partial);
+  const binding = normalize(
+    {
+      source: "ust-class-schedule",
+      termCode: "2530",
+      fetchedAt: data.generatedAt,
+      subjectFilter: partial ? "COMP" : null,
+      subjects: ["COMP"],
+      pageTotals: { COMP: 1 },
+      pages: [{ subject: "COMP", page: 1, html }],
+    },
+    {
+      termCode: "2530",
+      offerings: [
+        {
+          courseCode: "COMP2611",
+          evidence: "Registrar enrollment rules checked 2026-09-23",
+          combinations: [["12345", "12346", "12347"]],
+        },
+      ],
+    },
+  );
+  return binding;
 }
 
 let server: MongoMemoryServer;
@@ -117,6 +144,33 @@ describe("staged academic imports", () => {
     expect(stored?.observedAt).toBe("2026-09-23T10:00:00.000Z");
   });
 
+  test("a newer imported observation clears failure cooldown", async () => {
+    const database = db();
+    const first = batch();
+    await loadBatch(database, first);
+    const sectionId = first.sections[0]!.sectionId;
+    await database.collection("latestQuotas").updateOne(
+      { sectionId },
+      {
+        $set: {
+          nextRefreshAt: "2026-09-23T11:00:00.000Z",
+          staleSince: "2026-09-23T10:01:00.000Z",
+          lastRefreshStatus: "retryable_failed",
+        },
+      },
+    );
+    const later = batch(false, false, "2026-09-23T10:02:00.000Z");
+    await loadBatch(database, later);
+    expect(
+      await database.collection("latestQuotas").findOne({ sectionId }),
+    ).toMatchObject({
+      observedAt: later.generatedAt,
+      nextRefreshAt: null,
+      staleSince: null,
+      lastRefreshStatus: "succeeded",
+    });
+  });
+
   test("copies forward a partial batch and retires missing complete records", async () => {
     const database = db();
     const first = await loadBatch(database, batch(true), {
@@ -168,6 +222,137 @@ describe("staged academic imports", () => {
         .collection("courses")
         .countDocuments({ importBatchId: "resource-b", retiredAt: null }),
     ).toBe(2);
+  });
+
+  test("carries verified combinations through full and partial imports", async () => {
+    const database = db();
+    const verified = verifiedBatch();
+    await loadBatch(database, verified, { importBatchId: "verified-a" });
+    await loadBatch(database, batch(), {
+      importBatchId: "verified-b",
+      maxDropFraction: 0.1,
+    });
+    const carried = await database
+      .collection("sectionBundles")
+      .findOne({ importBatchId: "verified-b", retiredAt: null });
+    expect(carried).toMatchObject({
+      source: "ust-class-schedule",
+      bindingSource: "operator-verified",
+      bindingEvidence: verified.bundles[0]?.bindingEvidence,
+    });
+    await loadBatch(database, batch(false, true), {
+      importBatchId: "verified-c",
+    });
+    expect(
+      await database
+        .collection("sectionBundles")
+        .countDocuments({ importBatchId: "verified-c", retiredAt: null }),
+    ).toBe(1);
+    expect(
+      await loadBatch(database, batch(false, true), {
+        importBatchId: "verified-c",
+      }),
+    ).toBe("verified-c");
+    expect(
+      await database
+        .collection("sectionBundles")
+        .countDocuments({ importBatchId: "verified-c" }),
+    ).toBe(1);
+  });
+
+  test("meeting JSON key order does not revoke a verified combination", async () => {
+    const database = db();
+    await loadBatch(database, verifiedBatch(), { importBatchId: "order-a" });
+    const reordered = batch(false, true);
+    reordered.sections = reordered.sections.map((section) => ({
+      ...section,
+      meetings: section.meetings.map(({ timezone, ...meeting }) => ({
+        timezone,
+        ...meeting,
+      })),
+    }));
+    await loadBatch(database, reordered, { importBatchId: "order-b" });
+    expect(
+      await database.collection("sectionBundles").countDocuments({
+        importBatchId: "order-b",
+        retiredAt: null,
+      }),
+    ).toBe(1);
+  });
+
+  test("retires a carried combination when a referenced section changes", async () => {
+    const database = db();
+    await loadBatch(database, verifiedBatch(), { importBatchId: "changed-a" });
+    const changed = batch(false, true);
+    changed.sections[1]!.sectionCode = "LA9";
+    await loadBatch(database, changed, { importBatchId: "changed-b" });
+    expect(
+      await database
+        .collection("sectionBundles")
+        .countDocuments({ importBatchId: "changed-b", retiredAt: null }),
+    ).toBe(0);
+    expect(
+      (
+        await database
+          .collection("importRuns")
+          .findOne({ importBatchId: "changed-b" })
+      )?.warnings,
+    ).toContain(
+      `VERIFIED_BINDING_RETIRED:${verifiedBatch().bundles[0]?.bundleId}`,
+    );
+  });
+
+  test("an explicit empty binding list revokes prior verification", async () => {
+    const database = db();
+    await loadBatch(database, verifiedBatch(), { importBatchId: "revoke-a" });
+    const revoked = batch();
+    revoked.bindingOverrides = [revoked.offerings[0]!.offeringId];
+    await loadBatch(database, revoked, {
+      importBatchId: "revoke-b",
+      maxDropFraction: 0.1,
+    });
+    expect(
+      await database
+        .collection("sectionBundles")
+        .countDocuments({ importBatchId: "revoke-b", retiredAt: null }),
+    ).toBe(0);
+    await rollbackBatch(
+      database,
+      revoked.source,
+      revoked.term.termCode,
+      "revoke-a",
+    );
+    expect(
+      (await database.collection("academicTerms").findOne({ termCode: "2530" }))
+        ?.activeImportBatchId,
+    ).toBe("revoke-a");
+    expect(
+      await database
+        .collection("sectionBundles")
+        .countDocuments({ importBatchId: "revoke-a", retiredAt: null }),
+    ).toBe(1);
+  });
+
+  test("provider-derived bundle drops still trigger the complete-import guard", async () => {
+    const database = db();
+    const derived = batch();
+    derived.sections = derived.sections.map((row) => ({
+      ...row,
+      associatedClass: "1",
+    }));
+    derived.bundles = makeBundles(derived.sections).bundles;
+    expect(derived.bundles).toHaveLength(1);
+    await loadBatch(database, derived, { importBatchId: "derived-a" });
+    await expect(
+      loadBatch(database, batch(), {
+        importBatchId: "derived-b",
+        maxDropFraction: 0.1,
+      }),
+    ).rejects.toThrow("SUSPICIOUS_BUNDLES_DROP");
+    expect(
+      (await database.collection("academicTerms").findOne({ termCode: "2530" }))
+        ?.activeImportBatchId,
+    ).toBe("derived-a");
   });
 
   test("rejects suspicious drops without replacing the last good batch", async () => {
@@ -222,6 +407,11 @@ describe("staged academic imports", () => {
     first.term.providerCurrent = true;
     first.term.providerSelectable = true;
     await loadBatch(database, first, { importBatchId: "metadata-a" });
+    expect(
+      await database.collection("academicTerms").findOne({ termCode: "2530" }),
+    ).toMatchObject({
+      providerSignalsObservedAt: first.generatedAt,
+    });
     const partialMetadata = batch(false, true, "2026-09-23T11:00:00.000Z");
     partialMetadata.termMetadataCoverage = "partial";
     partialMetadata.term.providerCurrent = false;
@@ -230,7 +420,11 @@ describe("staged academic imports", () => {
     });
     expect(
       await database.collection("academicTerms").findOne({ termCode: "2530" }),
-    ).toMatchObject({ providerCurrent: false, providerSelectable: true });
+    ).toMatchObject({
+      providerCurrent: false,
+      providerSelectable: true,
+      providerSignalsObservedAt: first.generatedAt,
+    });
     const secondBatch = batch(false, false, "2026-09-24T10:00:00.000Z");
     secondBatch.termMetadataCoverage = "complete";
     secondBatch.term.providerCurrent = false;

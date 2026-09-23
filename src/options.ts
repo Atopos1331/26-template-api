@@ -176,6 +176,7 @@ export type AppOptions = {
   calendarMaxConflicts?: number;
   timeBannerUpcomingHours?: number;
   academicStructureTtlSeconds?: number;
+  academicCurrentTermCode?: string;
   academicQuotaTtlSeconds?: number;
   academicQuotaMinIntervalSeconds?: number;
   refreshFailureCooldownSeconds?: number;
@@ -188,6 +189,9 @@ export type AppOptions = {
   AuthPluginOptions;
 
 export function loadOptions(env: Env = Bun.env): AppOptions {
+  const currentTerm = env.ACADEMIC_CURRENT_TERM_CODE?.trim();
+  if (currentTerm && !/^\d{2}(10|20|30|40)$/.test(currentTerm))
+    throw new ConfigurationError("ACADEMIC_CURRENT_TERM_CODE");
   const options: AppOptions = {
     // Launching lots of services on the server,
     // especially at the same time by something such as docker compose up,
@@ -232,6 +236,7 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
       "ACADEMIC_STRUCTURE_TTL_SECONDS",
       86400,
     ),
+    academicCurrentTermCode: currentTerm || undefined,
     academicQuotaTtlSeconds: positiveInteger(
       env,
       "ACADEMIC_QUOTA_TTL_SECONDS",

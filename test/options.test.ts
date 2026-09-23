@@ -57,6 +57,17 @@ describe("loadOptions", () => {
     expect(loadOptions({}).appTimezone).toBe("Asia/Hong_Kong");
   });
 
+  test("validates the optional current term without guessing one", () => {
+    expect(loadOptions({}).academicCurrentTermCode).toBeUndefined();
+    expect(
+      loadOptions({ ACADEMIC_CURRENT_TERM_CODE: " 2610 " })
+        .academicCurrentTermCode,
+    ).toBe("2610");
+    expect(() =>
+      loadOptions({ ACADEMIC_CURRENT_TERM_CODE: "2026-fall" }),
+    ).toThrow("ACADEMIC_CURRENT_TERM_CODE");
+  });
+
   test("accepts a supplied IANA timezone", () => {
     expect(loadOptions({ APP_TIMEZONE: " America/Chicago " }).appTimezone).toBe(
       "America/Chicago",

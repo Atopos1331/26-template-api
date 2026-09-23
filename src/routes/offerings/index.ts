@@ -18,6 +18,7 @@ const offerings: FastifyPluginAsync<AppOptions> = async (
 ) => {
   const service = new AcademicService(fastify.mongo.db!, {
     structureTtlSeconds: opts.academicStructureTtlSeconds ?? 86400,
+    currentTermCode: opts.academicCurrentTermCode,
     quotaTtlSeconds: opts.academicQuotaTtlSeconds ?? 900,
     cursorKey: opts.cursorSigningKey ?? "development-only-cursor-signing-key",
     cursorTtlSeconds: opts.cursorTtlSeconds ?? 900,
