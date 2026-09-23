@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { AutoloadPluginOptions } from "@fastify/autoload";
 import type { FastifyServerOptions } from "fastify";
 import type { AuthPluginOptions } from "./plugins/auth.js";
@@ -26,6 +27,30 @@ function applicationTimezone(env: Env): string {
   }
 
   return timezone;
+}
+
+function positiveInteger(env: Env, name: string, fallback: number): number {
+  const value = env[name];
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(parsed)) {
+    throw new ConfigurationError(name);
+  }
+  return parsed;
+}
+
+function cursorSigningKey(env: Env): string {
+  const value = env.CURSOR_SIGNING_KEY;
+  if (value !== undefined) {
+    if (Buffer.byteLength(value) < 32) {
+      throw new ConfigurationError("CURSOR_SIGNING_KEY");
+    }
+    return value;
+  }
+  if (env.NODE_ENV === "production") {
+    throw new ConfigurationError("CURSOR_SIGNING_KEY");
+  }
+  return randomBytes(32).toString("base64url");
 }
 
 type OptionArgs = {
@@ -142,6 +167,10 @@ export type AppOptions = {
   // Optional: Are we in tests?
   test?: boolean;
   appTimezone?: string;
+  cursorSigningKey?: string;
+  cursorTtlSeconds?: number;
+  recurrenceMaxSpanDays?: number;
+  idempotencyRetentionSeconds?: number;
 } & FastifyServerOptions &
   Partial<AutoloadPluginOptions> &
   InitMongoPluginOptions &
@@ -163,6 +192,18 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
     mongoTestUri: getOption(env, "MONGO_TEST_URI", false)?.trim() || undefined,
     authSkip: getBooleanOption(env, "AUTH_SKIP", false),
     appTimezone: applicationTimezone(env),
+    cursorSigningKey: cursorSigningKey(env),
+    cursorTtlSeconds: positiveInteger(env, "CURSOR_TTL_SECONDS", 900),
+    recurrenceMaxSpanDays: positiveInteger(
+      env,
+      "RECURRENCE_MAX_SPAN_DAYS",
+      1461,
+    ),
+    idempotencyRetentionSeconds: positiveInteger(
+      env,
+      "IDEMPOTENCY_RETENTION_SECONDS",
+      86400,
+    ),
   };
 
   return options;

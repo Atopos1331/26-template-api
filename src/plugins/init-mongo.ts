@@ -261,6 +261,14 @@ async function initializeCollections(fastify: FastifyInstance): Promise<void> {
     { ownerUsername: 1, importId: 1 },
     { name: "events_owner_import" },
   );
+  await events.createIndex(
+    { ownerUsername: 1, operationId: 1 },
+    {
+      name: "events_owner_operation",
+      unique: true,
+      partialFilterExpression: { operationId: { $type: "string" } },
+    },
+  );
 
   const idempotencyRecords =
     db.collection<IdempotencyRecordDocument>("idempotencyRecords");
