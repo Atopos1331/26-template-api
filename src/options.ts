@@ -175,6 +175,13 @@ export type AppOptions = {
   calendarMaxItems?: number;
   calendarMaxConflicts?: number;
   timeBannerUpcomingHours?: number;
+  academicStructureTtlSeconds?: number;
+  academicQuotaTtlSeconds?: number;
+  academicQuotaMinIntervalSeconds?: number;
+  refreshFailureCooldownSeconds?: number;
+  refreshMaxAttempts?: number;
+  refreshLeaseSeconds?: number;
+  academicProviderBaseUrl?: string;
 } & FastifyServerOptions &
   Partial<AutoloadPluginOptions> &
   InitMongoPluginOptions &
@@ -220,6 +227,31 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
       "TIME_BANNER_UPCOMING_HOURS",
       24,
     ),
+    academicStructureTtlSeconds: positiveInteger(
+      env,
+      "ACADEMIC_STRUCTURE_TTL_SECONDS",
+      86400,
+    ),
+    academicQuotaTtlSeconds: positiveInteger(
+      env,
+      "ACADEMIC_QUOTA_TTL_SECONDS",
+      900,
+    ),
+    academicQuotaMinIntervalSeconds: positiveInteger(
+      env,
+      "ACADEMIC_QUOTA_MIN_INTERVAL_SECONDS",
+      300,
+    ),
+    refreshFailureCooldownSeconds: positiveInteger(
+      env,
+      "REFRESH_FAILURE_COOLDOWN_SECONDS",
+      3600,
+    ),
+    refreshMaxAttempts: positiveInteger(env, "REFRESH_MAX_ATTEMPTS", 3),
+    refreshLeaseSeconds: positiveInteger(env, "REFRESH_LEASE_SECONDS", 60),
+    academicProviderBaseUrl:
+      env.ACADEMIC_PROVIDER_BASE_URL?.trim() ||
+      "https://w5.ab.ust.hk/wcq/cgi-bin",
   };
 
   return options;

@@ -27,6 +27,27 @@ and loading HKUST Class Schedule data. It uses its own dependencies and MongoDB
 client; the API never starts a full-term crawl on a user request. See its
 [README](tools/course-data/README.md) for commands and source limitations.
 
+## Academic API and quota worker
+
+Import a term with `tools/course-data` before reading `/terms`,
+`/terms/:termCode/courses`, `/offerings/:offeringId`, or
+`/offerings/:offeringId/bundles`. These authenticated routes read only the
+active import batch. Stale structural data is marked in `meta.freshness` and
+waits for the next operator-run import; an HTTP request never crawls a term.
+
+`GET /sections/:sectionId/quota` returns the latest cached observation and
+queues one durable, deduplicated section refresh when it is stale. A missing
+quota returns `503` while the separate worker fetches it. To process jobs,
+set `MONGO_URI` to the same persistent database as the API and run:
+
+```sh
+bun run worker:academic-refresh
+```
+
+Use `bun run worker:academic-refresh --once` to process at most one job.
+The worker is not started by the API or Compose. Failed quota fetches back
+off; permanent failures have a cooldown. There is no public refresh endpoint.
+
 ## Environment
 
 Copy `.env.example` to `.env` for local configuration. `CURSOR_SIGNING_KEY` is
@@ -48,6 +69,13 @@ development setup and uses a process-local signing key by default.
 | `CALENDAR_MAX_ITEMS` | Maximum occurrence count per read, default 1000. |
 | `CALENDAR_MAX_CONFLICTS` | Maximum conflict pairs, default 10000. |
 | `TIME_BANNER_UPCOMING_HOURS` | Banner lookahead, default 24 hours. |
+| `ACADEMIC_STRUCTURE_TTL_SECONDS` | Stale marker for imported term and structural records, default 86400. |
+| `ACADEMIC_QUOTA_TTL_SECONDS` | Quota freshness lifetime, default 900. |
+| `ACADEMIC_QUOTA_MIN_INTERVAL_SECONDS` | Minimum time between successful quota refreshes, default 300. |
+| `REFRESH_FAILURE_COOLDOWN_SECONDS` | Permanent-failure cooldown and retry backoff cap, default 3600. |
+| `REFRESH_MAX_ATTEMPTS` | Maximum worker attempts per quota job, default 3. |
+| `REFRESH_LEASE_SECONDS` | Worker claim and resource lease lifetime, default 60. |
+| `ACADEMIC_PROVIDER_BASE_URL` | HKUST Class Schedule base URL for the worker. |
 | `API_PORT` | Host port for Compose, default 3000. |
 
 ## Scripts
@@ -56,6 +84,7 @@ development setup and uses a process-local signing key by default.
 | --- | --- |
 | `bun run dev` | Dev server, watch mode, debug logs |
 | `bun run start` | Same without watch, info logs |
+| `bun run worker:academic-refresh` | Process queued section-quota refreshes in a separate process |
 | `bun run test` | Tests, with coverage |
 | `bun run compile` | Type-check `src` and `test` with `tsc` |
 | `bun run check` | Read-only formatting + lint check |

@@ -69,6 +69,10 @@ const app: FastifyPluginAsync<AppOptions> = async (
           name: "Calendar",
           description: "Timetable occurrences and conflicts",
         },
+        {
+          name: "Academic",
+          description: "Academic terms, courses, sections and quota",
+        },
       ],
       components: {
         securitySchemes: {

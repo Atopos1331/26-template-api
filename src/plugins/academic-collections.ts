@@ -42,6 +42,24 @@ export type ImportRunDocument = Document & {
     | "permanently_failed";
 };
 
+export type RefreshJobDocument = Document & {
+  dedupeKey: string;
+  jobType: "section_quota";
+  source: string;
+  termCode: string;
+  targetId: string;
+  status:
+    | "queued"
+    | "running"
+    | "retryable_failed"
+    | "succeeded"
+    | "permanently_failed";
+  attempts: number;
+  claimGeneration: number;
+  availableAt: Date;
+  leaseExpiresAt?: Date;
+};
+
 export type AcademicCollections = {
   academicTerms: Collection<AcademicTermDocument>;
   courses: Collection<VersionedAcademicDocument>;
@@ -53,6 +71,7 @@ export type AcademicCollections = {
   importRuns: Collection<ImportRunDocument>;
   refreshLeases: Collection<Document>;
   importQuotaStaging: Collection<Document>;
+  refreshJobs: Collection<RefreshJobDocument>;
 };
 
 export async function initializeAcademicCollections(
@@ -117,6 +136,25 @@ export async function initializeAcademicCollections(
     { importBatchId: 1, snapshotId: 1 },
     { unique: true, name: "staged_quota_identity" },
   );
+  const refreshJobs = db.collection<RefreshJobDocument>("refreshJobs");
+  await refreshJobs.createIndex(
+    { dedupeKey: 1 },
+    {
+      unique: true,
+      name: "refresh_job_active_key",
+      partialFilterExpression: {
+        status: { $in: ["queued", "running", "retryable_failed"] },
+      },
+    },
+  );
+  await refreshJobs.createIndex(
+    { status: 1, availableAt: 1 },
+    { name: "refresh_job_poll" },
+  );
+  await refreshJobs.createIndex(
+    { leaseExpiresAt: 1 },
+    { name: "refresh_job_lease" },
+  );
   return {
     academicTerms,
     courses,
@@ -128,5 +166,6 @@ export async function initializeAcademicCollections(
     importRuns,
     refreshLeases,
     importQuotaStaging,
+    refreshJobs,
   };
 }

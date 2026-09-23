@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { AcademicError } from "../domain/academic.js";
 import { EventError } from "../domain/events.js";
 import { RevisionHeaderError } from "../domain/revision.js";
 import {
@@ -15,11 +16,16 @@ export function sendApiError(
   let code = "internal_error";
   let message = "Internal server error";
   let fields: Record<string, string> | undefined;
-  if (error instanceof EventError || error instanceof RevisionHeaderError) {
+  if (
+    error instanceof EventError ||
+    error instanceof RevisionHeaderError ||
+    error instanceof AcademicError
+  ) {
     status = error.statusCode;
     code = error.code;
     message = error.message;
-    if (error instanceof EventError) fields = error.fields;
+    if (error instanceof EventError || error instanceof AcademicError)
+      fields = error.fields;
   } else if (
     error instanceof UnauthorizedError ||
     error instanceof AuthorizationHeaderError
