@@ -194,14 +194,6 @@ async function projectQuota(
         throw error;
     }
   }
-  await snapshots.updateOne(
-    {
-      source: row.source,
-      sectionId: row.sectionId,
-      observedAt: row.observedAt,
-    },
-    { $set: { projectionStatus: "done" } },
-  );
 }
 
 async function finishActivated(

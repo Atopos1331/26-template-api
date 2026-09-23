@@ -87,6 +87,11 @@ describe("staged academic imports", () => {
     expect(await database.collection("quotaSnapshots").countDocuments()).toBe(
       3,
     );
+    expect(
+      await database
+        .collection("quotaSnapshots")
+        .countDocuments({ projectionStatus: "pending" }),
+    ).toBe(3);
     expect(await database.collection("latestQuotas").countDocuments()).toBe(3);
     await expect(
       loadBatch(
