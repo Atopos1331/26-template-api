@@ -4,7 +4,7 @@ A small Fastify + TypeScript service with MongoDB built in. Bun runs it and Biom
 
 ## What you need
 
-Bun 1.4.2 or newer. Older versions break the MongoDB driver; 1.3.14 will not work. Docker is only worth installing if you want a database that survives restarts.
+Bun 1.4.2 or newer. Older versions break the MongoDB driver; 1.3.14 will not work. Docker is optional; Compose runs the API and persistent MongoDB together.
 
 ## Running it
 
@@ -13,16 +13,19 @@ bun install
 bun run dev
 ```
 
-That serves http://localhost:3000. The first run downloads an in-memory MongoDB binary, roughly 150 MB, once. After that it's cached and startup is quick. If you'd rather have persistent data:
+That serves http://localhost:3000. The first run downloads an in-memory MongoDB binary, roughly 150 MB, once. After that it's cached and startup is quick. For a persistent API and MongoDB:
 
 ```sh
-docker compose up -d
-cp .env.example .env
+docker compose up --build -d
+curl http://localhost:3000/health
 ```
 
 ## Environment
 
-Everything here is optional. Copy `.env.example` to `.env` and set what you need.
+Copy `.env.example` to `.env` for local configuration. `CURSOR_SIGNING_KEY` is
+required when `NODE_ENV=production`; use a unique random secret of at least
+32 bytes and keep it stable across API instances. Compose is a localhost-only
+development setup and uses a process-local signing key by default.
 
 | Variable | What it does |
 | --- | --- |
@@ -30,6 +33,11 @@ Everything here is optional. Copy `.env.example` to `.env` and set what you need
 | `MONGO_TEST_URI` | Dedicated database for full-app MongoDB tests. Unset means in-memory; do not point it at the app database. |
 | `AUTH_SKIP` | Set to `true` to turn auth off locally. |
 | `APP_TIMEZONE` | IANA timezone for timetable/calendar features. Defaults to `Asia/Hong_Kong`; invalid values fail startup. |
+| `CURSOR_SIGNING_KEY` | Signs event list cursors; required in production. |
+| `CURSOR_TTL_SECONDS` | Cursor lifetime, default 900. |
+| `RECURRENCE_MAX_SPAN_DAYS` | Longest accepted weekly rule, default 1461. |
+| `IDEMPOTENCY_RETENTION_SECONDS` | Replay window for keyed event creates, default 86400. |
+| `API_PORT` | Host port for Compose, default 3000. |
 
 ## Scripts
 
@@ -88,6 +96,35 @@ Setting `AUTH_SKIP=true` turns verification off completely. Scoped requests then
 
 Swagger UI is at http://localhost:3000/documentation, Scalar at http://localhost:3000/reference.
 
+## Events
+
+`POST /events`, `GET /events`, `GET /events/:id`, `PATCH /events/:id`, and
+`DELETE /events/:id` require a bearer token. For example:
+
+```sh
+curl -X POST http://localhost:3000/events \
+  -H 'Authorization: Bearer alice-dev-token' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: first-study-group' \
+  -d '{"title":"Study group","startsAt":"2026-09-24T10:00:00Z","endsAt":"2026-09-24T11:00:00Z"}'
+```
+
+Timed events use UTC `startsAt`/`endsAt`; all-day events use an inclusive
+`startDate` and exclusive `endDate` with `allDay: true`. Weekly recurrence is
+stored on the master event. `GET /events` returns stored records ordered by
+`startsAt`, then `id`, with `limit` (1..100), a signed `cursor`, and optional
+`source`, `eventType`, and `readonly` filters. It does not expand occurrences
+or filter recurring masters by a calendar window yet; those are Phase 04 work.
+`supersedesCalendarKey` is rejected until calendar targets can be verified.
+
+Single-resource responses include a strong `ETag`. Send it as `If-Match` for
+PATCH and DELETE; a missing header returns 428 and a stale revision returns
+409. Repeating a POST with the same `Idempotency-Key` and body replays the
+original response within the configured retention window. A matching
+`externalId` also returns the existing manual event; different content is a
+409 conflict. Imported events may be read but cannot be changed through these
+routes.
+
 ## Where things live
 
 ```
@@ -103,6 +140,8 @@ src/
   routes/
     example/            # Public example route
     auth-example/       # Protected example route
+    events/             # Authenticated event CRUD
+    health/             # Public DB readiness check
 test/
   routes/               # Route tests
   auth-schema.test.ts   # withAuth schema-merging contract tests
