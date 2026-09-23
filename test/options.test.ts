@@ -78,4 +78,29 @@ describe("loadOptions", () => {
       }
     }
   });
+
+  test("requires a stable cursor key in production", () => {
+    expect(() => loadOptions({ NODE_ENV: "production" })).toThrow(
+      "CURSOR_SIGNING_KEY",
+    );
+    expect(() => loadOptions({ CURSOR_SIGNING_KEY: "short" })).toThrow(
+      "CURSOR_SIGNING_KEY",
+    );
+    const configured = loadOptions({
+      NODE_ENV: "production",
+      CURSOR_SIGNING_KEY: "x".repeat(32),
+    });
+    expect(configured.cursorSigningKey).toBe("x".repeat(32));
+  });
+
+  test("validates positive event retention and cursor limits", () => {
+    for (const name of [
+      "CURSOR_TTL_SECONDS",
+      "RECURRENCE_MAX_SPAN_DAYS",
+      "IDEMPOTENCY_RETENTION_SECONDS",
+    ]) {
+      expect(() => loadOptions({ [name]: "0" })).toThrow(name);
+      expect(() => loadOptions({ [name]: "1.5" })).toThrow(name);
+    }
+  });
 });

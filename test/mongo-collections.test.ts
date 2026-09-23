@@ -84,6 +84,7 @@ describe("timetable collection bootstrap", () => {
           "events_manual_external_id",
           "events_import_identity",
           "events_owner_import",
+          "events_owner_operation",
         ].sort(),
       );
       expect(
