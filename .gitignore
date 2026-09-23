@@ -20,3 +20,7 @@ coverage/
 
 # cache
 .cache/
+
+# Independent academic data tool
+tools/course-data/data/
+tools/course-data/node_modules/

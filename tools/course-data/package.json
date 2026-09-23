@@ -1,0 +1,24 @@
+{
+  "name": "@usthing/course-data",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch": "bun src/cli.ts fetch",
+    "normalize": "bun src/cli.ts normalize",
+    "fixture": "bun src/cli.ts fixture",
+    "load": "bun src/cli.ts load",
+    "refresh": "bun src/cli.ts refresh",
+    "test": "bun test test",
+    "compile": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "cheerio": "^1.2.0",
+    "mongodb": "^7.6.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "mongodb-memory-server": "^11.2.0",
+    "typescript": "7.0.2"
+  }
+}

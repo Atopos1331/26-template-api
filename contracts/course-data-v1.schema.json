@@ -1,0 +1,289 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "USThing course-data-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "source",
+    "term",
+    "generatedAt",
+    "termMetadataCoverage",
+    "isCompleteSnapshot",
+    "sourceRecordCount",
+    "resourceCoverage",
+    "courses",
+    "offerings",
+    "sections",
+    "bundles",
+    "quotaSnapshots"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "course-data-v1" },
+    "source": { "type": "string", "minLength": 1 },
+    "term": { "$ref": "#/$defs/term" },
+    "generatedAt": { "$ref": "#/$defs/timestamp" },
+    "termMetadataCoverage": { "$ref": "#/$defs/coverage" },
+    "isCompleteSnapshot": { "type": "boolean" },
+    "sourceRecordCount": { "type": "integer", "minimum": 0 },
+    "pageTotals": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "resourceCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["courses", "offerings", "sections", "bundles"],
+      "properties": {
+        "courses": { "$ref": "#/$defs/coverage" },
+        "offerings": { "$ref": "#/$defs/coverage" },
+        "sections": { "$ref": "#/$defs/coverage" },
+        "bundles": { "$ref": "#/$defs/coverage" }
+      }
+    },
+    "courses": { "type": "array", "items": { "$ref": "#/$defs/course" } },
+    "offerings": { "type": "array", "items": { "$ref": "#/$defs/offering" } },
+    "sections": { "type": "array", "items": { "$ref": "#/$defs/section" } },
+    "bundles": { "type": "array", "items": { "$ref": "#/$defs/bundle" } },
+    "quotaSnapshots": { "type": "array", "items": { "$ref": "#/$defs/quota" } },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "coverage": { "enum": ["complete", "partial", "unavailable"] },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$"
+    },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "nullableString": { "type": ["string", "null"] },
+    "term": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "termCode",
+        "source",
+        "academicYearStart",
+        "academicYearEnd",
+        "season",
+        "displayName",
+        "localizedName",
+        "sortKey",
+        "timezone",
+        "sourceRecordId"
+      ],
+      "properties": {
+        "termCode": { "type": "string", "minLength": 1 },
+        "source": { "type": "string" },
+        "academicYearStart": { "type": "integer" },
+        "academicYearEnd": { "type": "integer" },
+        "season": { "enum": ["fall", "winter", "spring", "summer"] },
+        "displayName": { "type": "string" },
+        "localizedName": { "type": "string" },
+        "sortKey": { "type": "integer" },
+        "timezone": { "type": "string" },
+        "providerCurrent": { "type": "boolean" },
+        "providerSelectable": { "type": "boolean" },
+        "sourceRecordId": { "type": "string" }
+      }
+    },
+    "course": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "courseId",
+        "subject",
+        "catalogNumber",
+        "courseCode",
+        "title",
+        "description",
+        "longDescription",
+        "credits",
+        "prerequisites",
+        "corequisites",
+        "exclusions",
+        "previousCourseCode",
+        "attributes",
+        "sourceCourseId"
+      ],
+      "properties": {
+        "courseId": { "type": "string" },
+        "subject": { "type": "string" },
+        "catalogNumber": { "type": "string" },
+        "courseCode": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "$ref": "#/$defs/nullableString" },
+        "longDescription": { "$ref": "#/$defs/nullableString" },
+        "credits": { "type": ["number", "null"] },
+        "prerequisites": { "type": "array", "items": { "type": "string" } },
+        "corequisites": { "type": "array", "items": { "type": "string" } },
+        "exclusions": { "type": "array", "items": { "type": "string" } },
+        "previousCourseCode": { "$ref": "#/$defs/nullableString" },
+        "attributes": { "type": "object" },
+        "sourceCourseId": { "type": "string" }
+      }
+    },
+    "offering": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offeringId",
+        "termCode",
+        "courseId",
+        "academicCareer",
+        "source",
+        "sourceCourseId",
+        "sourceRecordId"
+      ],
+      "properties": {
+        "offeringId": { "type": "string" },
+        "termCode": { "type": "string" },
+        "courseId": { "type": "string" },
+        "academicCareer": { "type": "string" },
+        "source": { "type": "string" },
+        "sourceCourseId": { "type": "string" },
+        "sourceRecordId": { "type": "string" }
+      }
+    },
+    "meeting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startDate",
+        "endDate",
+        "weekdays",
+        "startTime",
+        "endTime",
+        "timezone",
+        "facilityId",
+        "venue"
+      ],
+      "properties": {
+        "startDate": {
+          "anyOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }]
+        },
+        "endDate": {
+          "anyOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }]
+        },
+        "weekdays": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] }
+        },
+        "startTime": {
+          "type": "string",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+        },
+        "endTime": {
+          "type": "string",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+        },
+        "timezone": { "type": "string" },
+        "facilityId": { "$ref": "#/$defs/nullableString" },
+        "venue": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sectionId",
+        "offeringId",
+        "classNbr",
+        "sectionCode",
+        "classType",
+        "componentType",
+        "associatedClass",
+        "instructors",
+        "meetings",
+        "consentRequired",
+        "open",
+        "remarks",
+        "source",
+        "sourceRecordId"
+      ],
+      "properties": {
+        "sectionId": { "type": "string" },
+        "offeringId": { "type": "string" },
+        "classNbr": { "type": "string" },
+        "sectionCode": { "type": "string" },
+        "classType": { "$ref": "#/$defs/nullableString" },
+        "componentType": { "type": "string" },
+        "associatedClass": { "$ref": "#/$defs/nullableString" },
+        "instructors": { "type": "array", "items": { "type": "string" } },
+        "meetings": { "type": "array", "items": { "$ref": "#/$defs/meeting" } },
+        "consentRequired": { "type": ["boolean", "null"] },
+        "open": { "type": ["boolean", "null"] },
+        "remarks": { "$ref": "#/$defs/nullableString" },
+        "source": { "type": "string" },
+        "sourceRecordId": { "type": "string" }
+      }
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundleId",
+        "offeringId",
+        "leadClassNbr",
+        "componentClassNbrs",
+        "componentTypes",
+        "sectionLabels",
+        "bindingGroup",
+        "derivedSchedule",
+        "source"
+      ],
+      "properties": {
+        "bundleId": { "type": "string" },
+        "offeringId": { "type": "string" },
+        "leadClassNbr": { "type": "string" },
+        "componentClassNbrs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "componentTypes": { "type": "array", "items": { "type": "string" } },
+        "sectionLabels": { "type": "array", "items": { "type": "string" } },
+        "bindingGroup": { "$ref": "#/$defs/nullableString" },
+        "derivedSchedule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["meetings"],
+          "properties": {
+            "meetings": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/meeting" }
+            }
+          }
+        },
+        "source": { "type": "string" }
+      }
+    },
+    "quota": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshotId",
+        "sectionId",
+        "capacity",
+        "enrolled",
+        "remaining",
+        "waitlisted",
+        "reserveCapacity",
+        "open",
+        "observedAt",
+        "source"
+      ],
+      "properties": {
+        "snapshotId": { "type": "string" },
+        "sectionId": { "type": "string" },
+        "capacity": { "type": ["integer", "null"], "minimum": 0 },
+        "enrolled": { "type": ["integer", "null"], "minimum": 0 },
+        "remaining": { "type": ["integer", "null"] },
+        "waitlisted": { "type": ["integer", "null"], "minimum": 0 },
+        "reserveCapacity": { "type": ["integer", "null"], "minimum": 0 },
+        "open": { "type": ["boolean", "null"] },
+        "observedAt": { "$ref": "#/$defs/timestamp" },
+        "source": { "type": "string" }
+      }
+    }
+  }
+}
