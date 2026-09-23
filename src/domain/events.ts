@@ -253,11 +253,17 @@ export function normalizeEvent(
     invalid("color", "must be a six-digit hex color");
   if (body.blocksTime !== undefined && typeof body.blocksTime !== "boolean")
     invalid("blocksTime", "must be boolean");
-  if (body.supersedesCalendarKey !== undefined) {
-    invalid(
-      "supersedesCalendarKey",
-      "cannot be used until calendar targets are available",
-    );
+  const supersedesCalendarKey = text(
+    body.supersedesCalendarKey,
+    "supersedesCalendarKey",
+    512,
+  );
+  if (
+    body.supersedesCalendarKey !== undefined &&
+    body.supersedesCalendarKey !== null &&
+    !supersedesCalendarKey
+  ) {
+    invalid("supersedesCalendarKey", "cannot be blank");
   }
   const normalizedRecurrence = recurrence(
     body.recurrence,
@@ -287,6 +293,7 @@ export function normalizeEvent(
         : body.blocksTime,
     source: "manual",
     readonly: false,
+    ...(supersedesCalendarKey === undefined ? {} : { supersedesCalendarKey }),
   };
 }
 
@@ -316,6 +323,7 @@ export function normalizePatch(
     externalId: current.externalId,
     eventType: current.eventType,
     blocksTime: current.blocksTime,
+    supersedesCalendarKey: current.supersedesCalendarKey,
     ...patch,
   };
   if (patch.allDay === true && !current.allDay) {
@@ -365,6 +373,7 @@ export function sameCreateFields(
     externalId,
     eventType,
     blocksTime,
+    supersedesCalendarKey,
   }: Partial<EventDocument>) =>
     JSON.stringify({
       title,
@@ -382,6 +391,7 @@ export function sameCreateFields(
       externalId,
       eventType,
       blocksTime,
+      supersedesCalendarKey,
     });
   return comparable(current) === comparable(normalized);
 }

@@ -37,6 +37,10 @@ development setup and uses a process-local signing key by default.
 | `CURSOR_TTL_SECONDS` | Cursor lifetime, default 900. |
 | `RECURRENCE_MAX_SPAN_DAYS` | Longest accepted weekly rule, default 1461. |
 | `IDEMPOTENCY_RETENTION_SECONDS` | Replay window for keyed event creates, default 86400. |
+| `CALENDAR_MAX_WINDOW_DAYS` | Largest calendar query window, default 366 local days. |
+| `CALENDAR_MAX_ITEMS` | Maximum occurrence count per read, default 1000. |
+| `CALENDAR_MAX_CONFLICTS` | Maximum conflict pairs, default 10000. |
+| `TIME_BANNER_UPCOMING_HOURS` | Banner lookahead, default 24 hours. |
 | `API_PORT` | Host port for Compose, default 3000. |
 
 ## Scripts
@@ -113,9 +117,12 @@ Timed events use UTC `startsAt`/`endsAt`; all-day events use an inclusive
 `startDate` and exclusive `endDate` with `allDay: true`. Weekly recurrence is
 stored on the master event. `GET /events` returns stored records ordered by
 `startsAt`, then `id`, with `limit` (1..100), a signed `cursor`, and optional
-`source`, `eventType`, and `readonly` filters. It does not expand occurrences
-or filter recurring masters by a calendar window yet; those are Phase 04 work.
-`supersedesCalendarKey` is rejected until calendar targets can be verified.
+`source`, `eventType`, and `readonly` filters. Optional `from` and `to` must
+be supplied together; the list still returns each stored master once when any
+of its occurrences overlaps `[from, to)`. `supersedesCalendarKey` must refer
+to a visible non-manual projection. The current manual-only deployment has no
+eligible target, so such writes return `400` until course or ICS sources are
+connected.
 
 Single-resource responses include a strong `ETag`. Send it as `If-Match` for
 PATCH and DELETE; a missing header returns 428 and a stale revision returns
@@ -124,6 +131,34 @@ original response within the configured retention window. A matching
 `externalId` also returns the existing manual event; different content is a
 409 conflict. Imported events may be read but cannot be changed through these
 routes.
+
+## Calendar
+
+`GET /calendar` returns individual occurrences, including weekly repeats;
+`GET /calendar/conflicts` separates blocking from informational overlaps;
+`GET /calendar/banner` reports one `current`, `upcoming`, or `free` state.
+All are owner-scoped and require the same bearer token as `/events`.
+
+```sh
+curl -H 'Authorization: Bearer alice-dev-token' \
+  'http://localhost:3000/calendar?from=2026-09-01&to=2026-10-01'
+```
+
+`from` and `to` are both optional; supply both for a custom window. They
+accept `YYYY-MM-DD` in `APP_TIMEZONE` or UTC timestamps ending in `Z`.
+The default runs from today's local midnight to the first day of next month.
+The window is half-open and at most 366 local days by default. Oversized
+occurrence or conflict results fail with `400 calendar_window_too_dense`
+instead of returning partial data. Weekly recurrence keeps the original
+local start time and duration: nonexistent DST times are skipped, and an
+ambiguous time takes the earlier offset. All-day dates have an exclusive end.
+The Banner captures server time once and only considers blocking timed items;
+clients cannot set its clock.
+
+Only manual events feed the calendar today. `termCode` and `planId` are
+rejected until course-plan sources exist; responses include a
+`no_current_term` warning. ICS and course projections are later additions,
+not simulated results.
 
 ## Where things live
 
@@ -141,6 +176,7 @@ src/
     example/            # Public example route
     auth-example/       # Protected example route
     events/             # Authenticated event CRUD
+    calendar/           # Occurrences, conflicts, Time Banner
     health/             # Public DB readiness check
 test/
   routes/               # Route tests

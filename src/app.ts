@@ -65,6 +65,10 @@ const app: FastifyPluginAsync<AppOptions> = async (
         { name: "Example", description: "Example endpoints" },
         { name: "Auth", description: "Auth endpoints" },
         { name: "Events", description: "User-owned timetable events" },
+        {
+          name: "Calendar",
+          description: "Timetable occurrences and conflicts",
+        },
       ],
       components: {
         securitySchemes: {

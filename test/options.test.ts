@@ -98,9 +98,26 @@ describe("loadOptions", () => {
       "CURSOR_TTL_SECONDS",
       "RECURRENCE_MAX_SPAN_DAYS",
       "IDEMPOTENCY_RETENTION_SECONDS",
+      "CALENDAR_MAX_WINDOW_DAYS",
+      "CALENDAR_MAX_ITEMS",
+      "CALENDAR_MAX_CONFLICTS",
+      "TIME_BANNER_UPCOMING_HOURS",
     ]) {
       expect(() => loadOptions({ [name]: "0" })).toThrow(name);
       expect(() => loadOptions({ [name]: "1.5" })).toThrow(name);
     }
+  });
+
+  test("loads calendar safety limits", () => {
+    const options = loadOptions({
+      CALENDAR_MAX_WINDOW_DAYS: "30",
+      CALENDAR_MAX_ITEMS: "200",
+      CALENDAR_MAX_CONFLICTS: "300",
+      TIME_BANNER_UPCOMING_HOURS: "12",
+    });
+    expect(options.calendarMaxWindowDays).toBe(30);
+    expect(options.calendarMaxItems).toBe(200);
+    expect(options.calendarMaxConflicts).toBe(300);
+    expect(options.timeBannerUpcomingHours).toBe(12);
   });
 });

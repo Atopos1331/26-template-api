@@ -1,4 +1,5 @@
 import { type Collection, type Filter, ObjectId, type WithId } from "mongodb";
+import type { CalendarWindow } from "../domain/calendar.js";
 import { EventError } from "../domain/events.js";
 import type { EventDocument } from "../plugins/init-mongo.js";
 
@@ -15,6 +16,7 @@ export type EventFilters = {
   source?: string;
   eventType?: EventDocument["eventType"];
   readonly?: boolean;
+  window?: CalendarWindow;
 };
 
 export class EventRepository {
@@ -49,6 +51,19 @@ export class EventRepository {
         ? {}
         : { eventType: filters.eventType }),
       ...(filters.readonly === undefined ? {} : { readonly: filters.readonly }),
+      ...(filters.window === undefined
+        ? {}
+        : {
+            $and: [
+              { startsAt: { $lt: filters.window.to } },
+              {
+                $or: [
+                  { endsAt: { $gt: filters.window.from } },
+                  { recurrence: { $exists: true } },
+                ],
+              },
+            ],
+          }),
       ...(after === undefined
         ? {}
         : {
@@ -63,6 +78,33 @@ export class EventRepository {
       .sort({ startsAt: 1, _id: 1 })
       .limit(limit + 1)
       .toArray();
+  }
+
+  calendarCandidates(ownerUsername: string, window: CalendarWindow) {
+    return this.events.find({
+      ownerUsername,
+      source: "manual",
+      startsAt: { $lt: window.to },
+      $or: [
+        { endsAt: { $gt: window.from } },
+        { recurrence: { $exists: true } },
+      ],
+    });
+  }
+
+  async suppressedKeys(ownerUsername: string) {
+    const rows = await this.events
+      .find({
+        ownerUsername,
+        source: "manual",
+        supersedesCalendarKey: { $type: "string" },
+      })
+      .project<{ supersedesCalendarKey: string }>({
+        supersedesCalendarKey: 1,
+        _id: 0,
+      })
+      .toArray();
+    return rows.map((row) => row.supersedesCalendarKey);
   }
 
   async replace(

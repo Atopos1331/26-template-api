@@ -1,18 +1,16 @@
 import type { FastifyPluginAsync } from "fastify";
 import { Type } from "typebox";
 import type { FastifyTypebox } from "../../app.js";
+import { optionalCalendarWindow } from "../../domain/calendar.js";
 import { EventError, eventResponse } from "../../domain/events.js";
-import {
-  formatRevisionEtag,
-  parseIfMatch,
-  RevisionHeaderError,
-} from "../../domain/revision.js";
+import { formatRevisionEtag, parseIfMatch } from "../../domain/revision.js";
+import { sendApiError } from "../../http/api-errors.js";
 import type { AppOptions } from "../../options.js";
-import {
-  AuthorizationHeaderError,
-  UnauthorizedError,
-} from "../../plugins/auth.js";
 import { EventRepository } from "../../repositories/events.js";
+import {
+  CalendarService,
+  ManualCalendarSource,
+} from "../../services/calendar.js";
 import { EventService } from "../../services/events.js";
 
 const EventInput = Type.Object(
@@ -101,6 +99,17 @@ const events: FastifyPluginAsync<AppOptions> = async (
   fastify: FastifyTypebox,
   opts,
 ) => {
+  const calendar = () => {
+    const manual = new ManualCalendarSource(
+      new EventRepository(fastify.collections.events),
+    );
+    return new CalendarService(manual, [manual], {
+      timezone: opts.appTimezone ?? "Asia/Hong_Kong",
+      maxItems: opts.calendarMaxItems ?? 1000,
+      maxConflicts: opts.calendarMaxConflicts ?? 10000,
+      upcomingHours: opts.timeBannerUpcomingHours ?? 24,
+    });
+  };
   const service = () =>
     new EventService(
       new EventRepository(fastify.collections.events),
@@ -113,59 +122,13 @@ const events: FastifyPluginAsync<AppOptions> = async (
         cursorTtlSeconds: opts.cursorTtlSeconds ?? 900,
         idempotencyRetentionSeconds: opts.idempotencyRetentionSeconds ?? 86400,
       },
+      (owner, key) => calendar().canSupersede(owner, key),
     );
 
   fastify.withAuth(async (scope) => {
     scope.register(async (routes) => {
       const protectedRoutes = routes as typeof scope;
-      protectedRoutes.setErrorHandler((error, request, reply) => {
-        let status = 500;
-        let code = "internal_error";
-        let message = "Internal server error";
-        let fields: Record<string, string> | undefined;
-        if (
-          error instanceof EventError ||
-          error instanceof RevisionHeaderError
-        ) {
-          status = error.statusCode;
-          code = error.code;
-          message = error.message;
-          if (error instanceof EventError) fields = error.fields;
-        } else if (
-          error instanceof UnauthorizedError ||
-          error instanceof AuthorizationHeaderError
-        ) {
-          status = error.statusCode;
-          code = status === 401 ? "unauthorized" : "invalid_request";
-          message =
-            status === 401
-              ? "Authentication required"
-              : "Invalid Authorization header";
-        } else if (
-          error instanceof Error &&
-          "statusCode" in error &&
-          typeof error.statusCode === "number" &&
-          error.statusCode < 500
-        ) {
-          status = error.statusCode;
-          code = "invalid_request";
-          message = "Request validation failed";
-        } else {
-          request.log.error(error);
-        }
-        const body = {
-          error: {
-            code,
-            message,
-            ...(fields ? { fields } : {}),
-            requestId: request.id,
-          },
-        };
-        return reply
-          .code(status)
-          .header("content-type", "application/json; charset=utf-8")
-          .send(JSON.stringify(body));
-      });
+      protectedRoutes.setErrorHandler(sendApiError);
 
       protectedRoutes.post(
         "/",
@@ -205,6 +168,8 @@ const events: FastifyPluginAsync<AppOptions> = async (
                 source: Type.Optional(Type.String()),
                 eventType: Type.Optional(Type.String()),
                 readonly: Type.Optional(Type.String()),
+                from: Type.Optional(Type.String()),
+                to: Type.Optional(Type.String()),
               },
               { additionalProperties: false },
             ),
@@ -279,6 +244,16 @@ const events: FastifyPluginAsync<AppOptions> = async (
               ...(query.readonly === undefined
                 ? {}
                 : { readonly: query.readonly === "true" }),
+              ...(query.from === undefined && query.to === undefined
+                ? {}
+                : {
+                    window: optionalCalendarWindow(
+                      query.from,
+                      query.to,
+                      opts.appTimezone ?? "Asia/Hong_Kong",
+                      opts.calendarMaxWindowDays ?? 366,
+                    ),
+                  }),
             },
             limit,
             query.cursor,

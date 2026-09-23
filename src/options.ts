@@ -171,6 +171,10 @@ export type AppOptions = {
   cursorTtlSeconds?: number;
   recurrenceMaxSpanDays?: number;
   idempotencyRetentionSeconds?: number;
+  calendarMaxWindowDays?: number;
+  calendarMaxItems?: number;
+  calendarMaxConflicts?: number;
+  timeBannerUpcomingHours?: number;
 } & FastifyServerOptions &
   Partial<AutoloadPluginOptions> &
   InitMongoPluginOptions &
@@ -203,6 +207,18 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
       env,
       "IDEMPOTENCY_RETENTION_SECONDS",
       86400,
+    ),
+    calendarMaxWindowDays: positiveInteger(
+      env,
+      "CALENDAR_MAX_WINDOW_DAYS",
+      366,
+    ),
+    calendarMaxItems: positiveInteger(env, "CALENDAR_MAX_ITEMS", 1000),
+    calendarMaxConflicts: positiveInteger(env, "CALENDAR_MAX_CONFLICTS", 10000),
+    timeBannerUpcomingHours: positiveInteger(
+      env,
+      "TIME_BANNER_UPCOMING_HOURS",
+      24,
     ),
   };
 

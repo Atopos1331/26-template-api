@@ -10,6 +10,7 @@ import {
   ObjectId,
   type WithId,
 } from "mongodb";
+import { eventOverlapsWindow } from "../domain/calendar.js";
 import {
   EventError,
   eventResponse,
@@ -78,6 +79,10 @@ export class EventService {
     private readonly events: EventRepository,
     private readonly records: Collection<IdempotencyRecordDocument>,
     private readonly settings: EventSettings,
+    private readonly canSupersede: (
+      owner: string,
+      key: string,
+    ) => Promise<boolean> = async () => false,
   ) {}
 
   private sign(payload: string) {
@@ -145,15 +150,32 @@ export class EventService {
         ? undefined
         : this.decodeCursor(cursor, owner, filters);
     const evaluatedAt = after?.evaluatedAt ?? Date.now();
-    const rows = await this.events.list(owner, filters, limit, after);
-    const visible = rows.slice(0, limit);
-    const last = visible.at(-1);
+    const visible: Awaited<ReturnType<EventRepository["list"]>> = [];
+    const batchSize = filters.window ? 100 : limit;
+    let position = after;
+    while (visible.length <= limit) {
+      const rows = await this.events.list(owner, filters, batchSize, position);
+      for (const row of filters.window ? rows.slice(0, batchSize) : rows) {
+        if (!filters.window || eventOverlapsWindow(row, filters.window))
+          visible.push(row);
+        if (visible.length > limit) break;
+      }
+      if (visible.length > limit || rows.length <= batchSize) break;
+      const lastScanned = rows[batchSize - 1]!;
+      position = {
+        startsAt: lastScanned.startsAt,
+        id: lastScanned._id,
+        evaluatedAt,
+      };
+    }
+    const pageItems = visible.slice(0, limit);
+    const last = pageItems.at(-1);
     return {
-      items: visible.map(eventResponse),
+      items: pageItems.map(eventResponse),
       page: {
-        hasMore: rows.length > limit,
+        hasMore: visible.length > limit,
         nextCursor:
-          rows.length > limit && last
+          visible.length > limit && last
             ? this.encodeCursor({
                 owner,
                 filters,
@@ -343,6 +365,49 @@ export class EventService {
     );
     const key = idempotencyKey(keyHeader);
     const now = new Date();
+    const requestHash = hash(JSON.stringify(normalized));
+    if (key) {
+      const existingRecord = await this.records.findOne({
+        ownerScope: owner,
+        routeKey: ROUTE_KEY,
+        idempotencyKeyHash: hash(key),
+      });
+      if (existingRecord && existingRecord.expiresAt > now) {
+        if (existingRecord.requestHash !== requestHash) {
+          throw new EventError(
+            "idempotency_key_reused",
+            409,
+            "Idempotency key was used for another request",
+          );
+        }
+        return this.resumeRecord(owner, existingRecord, normalized);
+      }
+    }
+    const existingExternal = normalized.externalId
+      ? await this.events.findByExternalId(owner, normalized.externalId)
+      : null;
+    if (existingExternal && !sameCreateFields(existingExternal, normalized)) {
+      throw new EventError(
+        "external_id_conflict",
+        409,
+        "External ID already belongs to another event",
+      );
+    }
+    if (
+      !existingExternal &&
+      normalized.supersedesCalendarKey &&
+      !(await this.canSupersede(owner, normalized.supersedesCalendarKey))
+    ) {
+      throw new EventError(
+        "invalid_request",
+        400,
+        "Request validation failed",
+        {
+          supersedesCalendarKey:
+            "must reference a visible non-manual calendar item",
+        },
+      );
+    }
     const operationId = randomUUID();
     const event: WithId<EventDocument> = {
       _id: new ObjectId(),
@@ -355,7 +420,6 @@ export class EventService {
     };
     if (!key) return this.insertOrReuse(owner, event, normalized);
 
-    const requestHash = hash(JSON.stringify(normalized));
     const record: WithId<IdempotencyRecordDocument> = {
       _id: new ObjectId(),
       ownerScope: owner,
@@ -441,6 +505,23 @@ export class EventService {
       this.settings.timezone,
       this.settings.maxSpanDays,
     );
+    if (
+      input &&
+      typeof input === "object" &&
+      "supersedesCalendarKey" in input &&
+      normalized.supersedesCalendarKey &&
+      !(await this.canSupersede(owner, normalized.supersedesCalendarKey))
+    ) {
+      throw new EventError(
+        "invalid_request",
+        400,
+        "Request validation failed",
+        {
+          supersedesCalendarKey:
+            "must reference a visible non-manual calendar item",
+        },
+      );
+    }
     const updated: WithId<EventDocument> = {
       _id: current._id,
       ownerUsername: owner,
