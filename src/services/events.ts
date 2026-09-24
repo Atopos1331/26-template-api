@@ -51,6 +51,11 @@ type EventSettings = {
   idempotencyRetentionSeconds: number;
 };
 
+type EventVisibility = (
+  owner: string,
+  events: WithId<EventDocument>[],
+) => Promise<WithId<EventDocument>[]>;
+
 const ROUTE_KEY = "POST /events";
 const PROCESSING_LEASE_MS = 120_000;
 
@@ -83,6 +88,8 @@ export class EventService {
       owner: string,
       key: string,
     ) => Promise<boolean> = async () => false,
+    private readonly visibleEvents: EventVisibility = async (_owner, events) =>
+      events,
   ) {}
 
   private sign(payload: string) {
@@ -155,7 +162,13 @@ export class EventService {
     let position = after;
     while (visible.length <= limit) {
       const rows = await this.events.list(owner, filters, batchSize, position);
-      for (const row of filters.window ? rows.slice(0, batchSize) : rows) {
+      const scanned = filters.window ? rows.slice(0, batchSize) : rows;
+      const visibleRows = await this.visibleEvents(owner, scanned);
+      const visibleIds = new Set(
+        visibleRows.map((row) => row._id.toHexString()),
+      );
+      for (const row of scanned) {
+        if (!visibleIds.has(row._id.toHexString())) continue;
         if (!filters.window || eventOverlapsWindow(row, filters.window))
           visible.push(row);
         if (visible.length > limit) break;
@@ -192,7 +205,13 @@ export class EventService {
 
   async get(owner: string, id: string) {
     const event = await this.events.findById(owner, eventId(id));
-    if (!event) throw new EventError("not_found", 404, "Event not found");
+    if (
+      !event ||
+      !(await this.visibleEvents(owner, [event])).some((row) =>
+        row._id.equals(event._id),
+      )
+    )
+      throw new EventError("not_found", 404, "Event not found");
     return event;
   }
 

@@ -245,6 +245,7 @@ export function expandCourseBundle(
         ),
         source: "course",
         sourceId: bundle.bundleId,
+        exportUid: `course:${bundle.termCode ?? "unknown"}:${bundle.bundleId}:${meetingIndex}:${day.toString()}`,
         title: `${bundle.courseCode}${bundle.sectionLabels.length ? ` (${bundle.sectionLabels.join("/")})` : ""}`,
         ...(meeting.venue ? { location: meeting.venue } : {}),
         startsAt: startIso,

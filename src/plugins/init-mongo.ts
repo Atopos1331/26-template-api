@@ -37,6 +37,7 @@ export type EventDocument = {
   importId?: ObjectId | null;
   recurrenceId?: string | null;
   recurrenceStatus?: string;
+  identityQuality?: "derived_identity";
   eventType?: "class" | "exam" | "deadline" | "reminder" | "other";
   blocksTime: boolean;
   supersedesCalendarKey?: string;
@@ -45,6 +46,30 @@ export type EventDocument = {
   operationId?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type EventImportStatus = "processing" | "active" | "deleted" | "failed";
+
+export type EventImportDocument = {
+  _id: ObjectId;
+  ownerUsername: string;
+  source: "ics";
+  filename?: string;
+  contentHash: string;
+  optionsHash: string;
+  importWindowFrom: string;
+  importWindowTo: string;
+  defaultBlocksTime: boolean;
+  operationId?: string;
+  importedAt: string;
+  activatedAt?: string;
+  processingLeaseExpiresAt?: string;
+  createdCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  rejectedCount: number;
+  rejections?: Array<{ reason: string; count: number }>;
+  status: EventImportStatus;
 };
 
 export type IdempotencyRecordState = "processing" | "completed" | "failed";
@@ -292,6 +317,24 @@ async function initializeCollections(fastify: FastifyInstance): Promise<void> {
     },
   );
 
+  const eventImports = db.collection<EventImportDocument>("eventImports");
+  await eventImports.createIndex(
+    { ownerUsername: 1, source: 1, contentHash: 1, optionsHash: 1 },
+    {
+      name: "event_import_content_options",
+      unique: true,
+      partialFilterExpression: { status: { $in: ["processing", "active"] } },
+    },
+  );
+  await eventImports.createIndex(
+    { ownerUsername: 1, importedAt: -1, _id: -1 },
+    { name: "event_import_owner_list" },
+  );
+  await eventImports.createIndex(
+    { status: 1, processingLeaseExpiresAt: 1 },
+    { name: "event_import_recovery" },
+  );
+
   const idempotencyRecords =
     db.collection<IdempotencyRecordDocument>("idempotencyRecords");
   await idempotencyRecords.createIndex(
@@ -325,6 +368,7 @@ async function initializeCollections(fastify: FastifyInstance): Promise<void> {
   fastify.decorate("collections", {
     example,
     events,
+    eventImports,
     idempotencyRecords,
     coursePlans,
     ...academic,
@@ -358,6 +402,7 @@ declare module "fastify" {
     collections: AcademicCollections & {
       example: Collection<Document>;
       events: Collection<EventDocument>;
+      eventImports: Collection<EventImportDocument>;
       idempotencyRecords: Collection<IdempotencyRecordDocument>;
       coursePlans: Collection<CoursePlanDocument>;
     };

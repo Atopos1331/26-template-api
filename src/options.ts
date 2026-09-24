@@ -211,6 +211,11 @@ export type AppOptions = {
   refreshLeaseSeconds?: number;
   academicProviderBaseUrl?: string;
   commonCoreMaxAgeDays?: number;
+  icsMaxPayloadBytes?: number;
+  icsMaxOccurrences?: number;
+  icsDefaultImportWindowDays?: number;
+  icsProcessingLeaseSeconds?: number;
+  icsImportRecoveryGraceSeconds?: number;
 } & FastifyServerOptions &
   Partial<AutoloadPluginOptions> &
   InitMongoPluginOptions &
@@ -347,6 +352,27 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
       env.ACADEMIC_PROVIDER_BASE_URL?.trim() ||
       "https://w5.ab.ust.hk/wcq/cgi-bin",
     commonCoreMaxAgeDays: positiveInteger(env, "COMMON_CORE_MAX_AGE_DAYS", 365),
+    icsMaxPayloadBytes: positiveInteger(
+      env,
+      "ICS_MAX_PAYLOAD_BYTES",
+      5_242_880,
+    ),
+    icsMaxOccurrences: positiveInteger(env, "ICS_MAX_OCCURRENCES", 1000),
+    icsDefaultImportWindowDays: positiveInteger(
+      env,
+      "ICS_DEFAULT_IMPORT_WINDOW_DAYS",
+      366,
+    ),
+    icsProcessingLeaseSeconds: positiveInteger(
+      env,
+      "ICS_IMPORT_PROCESSING_LEASE_SECONDS",
+      120,
+    ),
+    icsImportRecoveryGraceSeconds: positiveInteger(
+      env,
+      "ICS_IMPORT_RECOVERY_GRACE_SECONDS",
+      3600,
+    ),
   };
 
   return options;

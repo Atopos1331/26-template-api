@@ -502,6 +502,67 @@ test("apply rechecks conflicts between selected bundles", async () => {
   }
 });
 
+test("applying an auto-plan rejects a newly imported blocking ICS event", async () => {
+  const app = await buildApp();
+  try {
+    await seed(app.mongo.db!);
+    await seedConflictingMeetings(app.mongo.db!);
+    const created = await app.inject({
+      method: "POST",
+      url: "/plans",
+      headers: alice,
+      payload: { name: "ICS conflict", termCode },
+    });
+    const id = created.json().data.id;
+    const generated = await app.inject({
+      method: "POST",
+      url: `/plans/${id}/auto-plans`,
+      headers: alice,
+      payload: {
+        includeCurrentSelected: false,
+        courses: [{ courseCode: "COMP2611", required: true }],
+      },
+    });
+    expect(generated.statusCode).toBe(200);
+    expect(generated.json().data.options.length).toBeGreaterThan(0);
+    const token = generated.json().data.options[0].optionToken;
+
+    const imported = await app.inject({
+      method: "POST",
+      url: "/events/import/ics?from=2026-09-01&to=2026-12-02",
+      headers: { ...alice, "content-type": "text/calendar" },
+      payload: [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "BEGIN:VEVENT",
+        "UID:blocking-class-time",
+        "DTSTART:20261006T020000Z",
+        "DTEND:20261006T030000Z",
+        "SUMMARY:Imported class conflict",
+        "END:VEVENT",
+        "END:VCALENDAR",
+        "",
+      ].join("\r\n"),
+    });
+    expect(imported.statusCode).toBe(201);
+
+    const applied = await app.inject({
+      method: "POST",
+      url: `/plans/${id}/auto-plans/apply`,
+      headers: {
+        ...alice,
+        "if-match": '"1"',
+        "idempotency-key": "apply-imported-ics-conflict",
+      },
+      payload: { optionToken: token },
+    });
+    expect(applied.statusCode).toBe(409);
+    expect(applied.json().error.code).toBe("stale_recommendation");
+  } finally {
+    await app.close();
+  }
+});
+
 test("recommendations omit an unavailable quota component from the score denominator", async () => {
   const app = await buildApp();
   try {

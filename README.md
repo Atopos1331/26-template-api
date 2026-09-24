@@ -87,6 +87,11 @@ development setup and uses a process-local signing key by default.
 | `CALENDAR_MAX_ITEMS` | Maximum occurrence count per read, default 1000. |
 | `CALENDAR_MAX_CONFLICTS` | Maximum conflict pairs, default 10000. |
 | `TIME_BANNER_UPCOMING_HOURS` | Banner lookahead, default 24 hours. |
+| `ICS_MAX_PAYLOAD_BYTES` | Maximum ICS request size, default 5242880 bytes. |
+| `ICS_MAX_OCCURRENCES` | Maximum weekly occurrences validated per import, default 1000. |
+| `ICS_DEFAULT_IMPORT_WINDOW_DAYS` | Default import validation window, default 366 days. |
+| `ICS_IMPORT_PROCESSING_LEASE_SECONDS` | ICS import processing lease, default 120 seconds. |
+| `ICS_IMPORT_RECOVERY_GRACE_SECONDS` | Extra age before recovery marks a stale import failed, default 3600 seconds. |
 | `ACADEMIC_STRUCTURE_TTL_SECONDS` | Stale marker for imported term and structural records, default 86400. |
 | `ACADEMIC_CURRENT_TERM_CODE` | Optional actual ongoing UST term code (for example `2610`); only controls `isCurrent` and term ordering. |
 | `ACADEMIC_QUOTA_TTL_SECONDS` | Quota freshness lifetime, default 900. |
@@ -106,6 +111,7 @@ development setup and uses a process-local signing key by default.
 | `bun run dev` | Dev server, watch mode, debug logs |
 | `bun run start` | Same without watch, info logs |
 | `bun run worker:academic-refresh` | Process queued section-quota refreshes in a separate process |
+| `bun run worker:ics-import-recovery` | Mark expired ICS imports failed and remove their staged event rows; schedule this one-shot command separately |
 | `bun run test` | Tests, with coverage |
 | `bun run compile` | Type-check `src` and `test` with `tsc` |
 | `bun run check` | Read-only formatting + lint check |
@@ -177,9 +183,8 @@ stored on the master event. `GET /events` returns stored records ordered by
 `source`, `eventType`, and `readonly` filters. Optional `from` and `to` must
 be supplied together; the list still returns each stored master once when any
 of its occurrences overlaps `[from, to)`. `supersedesCalendarKey` must refer
-to a visible non-manual projection. The current manual-only deployment has no
-eligible target, so such writes return `400` until course or ICS sources are
-connected.
+to a visible course or imported ICS projection. A manual event can then
+replace that occurrence in calendar and conflict results.
 
 Single-resource responses include a strong `ETag`. Send it as `If-Match` for
 PATCH and DELETE; a missing header returns 428 and a stale revision returns
@@ -188,6 +193,20 @@ original response within the configured retention window. A matching
 `externalId` also returns the existing manual event; different content is a
 409 conflict. Imported events may be read but cannot be changed through these
 routes.
+
+`POST /events/import/ics` accepts a `text/calendar` body. Optional `from` and
+`to` parameters set the occurrence validation window; both accept local dates
+or UTC timestamps and the window is bounded by `CALENDAR_MAX_WINDOW_DAYS`.
+`defaultBlocksTime` defaults to `true` for timed events; all-day imports remain
+informational. The import response reports created, updated, skipped, and
+rejected counts. `Idempotency-Key` makes retries replay the completed response
+and cannot be reused for different content during its retention period.
+
+Imports are stored as versions. The newest active version supplies each UID;
+deleting an import restores an older active version when one exists. Use
+`GET /events/imports` to list versions and `DELETE /events/imports/:importId`
+to remove one. `GET /events.ics` exports the visible calendar and accepts the
+same `from`/`to` window, plus optional `termCode` and `planId` filters.
 
 ## Calendar
 
@@ -212,10 +231,11 @@ ambiguous time takes the earlier offset. All-day dates have an exclusive end.
 The Banner captures server time once and only considers blocking timed items;
 clients cannot set its clock.
 
-Only manual events feed the calendar today. `termCode` and `planId` are
-rejected until course-plan sources exist; responses include a
-`no_current_term` warning. ICS and course projections are later additions,
-not simulated results.
+Manual events, effective imported ICS events, and course-plan selections feed
+the calendar. `termCode` and `planId` filter course-plan projections. Conflict
+checks used by planner apply re-read current blocking manual and imported ICS
+events, so an event imported after recommendation generation can make its
+signed option stale.
 
 ## Where things live
 
@@ -233,8 +253,14 @@ src/
     example/            # Public example route
     auth-example/       # Protected example route
     events/             # Authenticated event CRUD
+    events-ics.ts       # ICS export and shared calendar projections
     calendar/           # Occurrences, conflicts, Time Banner
     health/             # Public DB readiness check
+  domain/
+    ics.ts              # ICS parsing and normalization
+    ics-calendar.ts     # Recurrence expansion and exception overlays
+  workers/
+    ics-import-recovery.ts # Stale import cleanup
 test/
   routes/               # Route tests
   auth-schema.test.ts   # withAuth schema-merging contract tests

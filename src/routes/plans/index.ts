@@ -145,7 +145,10 @@ function service(fastify: FastifyTypebox, opts: AppOptions) {
   return new CoursePlanService(
     new CoursePlanRepository(fastify.collections.coursePlans),
     new CourseCatalogRepository(fastify.mongo.db!),
-    new EventRepository(fastify.collections.events),
+    new EventRepository(
+      fastify.collections.events,
+      fastify.collections.eventImports,
+    ),
     fastify.collections.idempotencyRecords,
     {
       timezone: opts.appTimezone ?? "Asia/Hong_Kong",

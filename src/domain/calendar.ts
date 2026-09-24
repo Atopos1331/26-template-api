@@ -10,6 +10,7 @@ export type CalendarOccurrence = {
   calendarKey: string;
   source: string;
   sourceId: string;
+  exportUid?: string;
   title: string;
   description?: string;
   location?: string;
@@ -142,8 +143,12 @@ function manualOccurrence(
   end: string,
   startDate?: string,
   endDate?: string,
+  occurrenceIdentity?: string,
 ): CalendarOccurrence {
-  const sourceId = event._id.toHexString();
+  const sourceId =
+    event.source === "ics" && event.externalId
+      ? event.externalId
+      : event._id.toHexString();
   const localStart = Temporal.Instant.from(start).toZonedDateTimeISO(
     event.timezone,
   );
@@ -151,9 +156,10 @@ function manualOccurrence(
     event.timezone,
   );
   return {
-    calendarKey: calendarKey("manual", sourceId, start, end),
-    source: "manual",
+    calendarKey: calendarKey(event.source, sourceId, start, end),
+    source: event.source,
     sourceId,
+    exportUid: `${event.source}:${sourceId}:${occurrenceIdentity ?? "single"}`,
     title: event.title,
     ...(event.description === undefined
       ? {}
@@ -179,7 +185,10 @@ export function* manualOccurrences(
   event: WithId<EventDocument>,
   window: CalendarWindow,
 ): Generator<CalendarOccurrence> {
-  if (event.source !== "manual" || event.recurrenceStatus === "cancelled")
+  if (
+    !["manual", "ics"].includes(event.source) ||
+    event.recurrenceStatus === "CANCELLED"
+  )
     return;
   if (!event.recurrence) {
     if (overlaps(event.startsAt, event.endsAt, window)) {
@@ -189,6 +198,7 @@ export function* manualOccurrences(
         event.endsAt,
         event.startDate,
         event.endDate,
+        event.recurrenceId ?? "single",
       );
     }
     return;
@@ -253,7 +263,14 @@ export function* manualOccurrences(
       end = new Date(zoned.epochMilliseconds + duration).toISOString();
     }
     if (overlaps(start, end, window))
-      yield manualOccurrence(event, start, end, startDate, endDate);
+      yield manualOccurrence(
+        event,
+        start,
+        end,
+        startDate,
+        endDate,
+        event.recurrenceId ?? day.toString(),
+      );
   }
 }
 
@@ -279,7 +296,7 @@ export function eventOverlapsWindow(
   event: WithId<EventDocument>,
   window: CalendarWindow,
 ) {
-  if (event.source !== "manual")
+  if (event.source !== "manual" && event.source !== "ics")
     return !event.recurrence && overlaps(event.startsAt, event.endsAt, window);
   return !manualOccurrences(event, window).next().done;
 }

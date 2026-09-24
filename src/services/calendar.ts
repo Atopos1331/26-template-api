@@ -9,6 +9,7 @@ import {
 } from "../domain/calendar.js";
 import { EventError } from "../domain/events.js";
 import type { EventRepository } from "../repositories/events.js";
+import type { IcsService } from "./ics.js";
 
 export interface CalendarSource {
   readonly source: string;
@@ -66,6 +67,16 @@ export class CoursePlanCalendarSource implements CalendarSource {
 
   resolvesCalendarKey(owner: string, key: string) {
     return this.resolver(owner, key);
+  }
+}
+
+export class ImportedCalendarSource implements CalendarSource {
+  readonly source = "ics";
+
+  constructor(private readonly imports: IcsService) {}
+
+  load(owner: string, window: CalendarWindow, maxItems: number) {
+    return this.imports.calendar(owner, window, maxItems);
   }
 }
 

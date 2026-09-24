@@ -11,9 +11,11 @@ import { EventRepository } from "../../repositories/events.js";
 import {
   CalendarService,
   CoursePlanCalendarSource,
+  ImportedCalendarSource,
   ManualCalendarSource,
 } from "../../services/calendar.js";
 import { CoursePlanService } from "../../services/course-plans.js";
+import { IcsService } from "../../services/ics.js";
 
 const Occurrence = Type.Object(
   {
@@ -85,7 +87,10 @@ const calendar: FastifyPluginAsync<AppOptions> = async (
     new CoursePlanService(
       new CoursePlanRepository(fastify.collections.coursePlans),
       new CourseCatalogRepository(fastify.mongo.db!),
-      new EventRepository(fastify.collections.events),
+      new EventRepository(
+        fastify.collections.events,
+        fastify.collections.eventImports,
+      ),
       fastify.collections.idempotencyRecords,
       {
         timezone: opts.appTimezone ?? "Asia/Hong_Kong",
@@ -112,7 +117,10 @@ const calendar: FastifyPluginAsync<AppOptions> = async (
     );
   const service = (planId?: string, termCode?: string) => {
     const manual = new ManualCalendarSource(
-      new EventRepository(fastify.collections.events),
+      new EventRepository(
+        fastify.collections.events,
+        fastify.collections.eventImports,
+      ),
     );
     const course = new CoursePlanCalendarSource(
       (owner, window, requestedPlanId, requestedTermCode) =>
@@ -126,7 +134,20 @@ const calendar: FastifyPluginAsync<AppOptions> = async (
       planId,
       termCode,
     );
-    return new CalendarService(manual, [manual, course], {
+    const imports = new IcsService(
+      fastify.collections.events,
+      fastify.collections.eventImports,
+      {
+        timezone: opts.appTimezone ?? "Asia/Hong_Kong",
+        maxWindowDays: opts.calendarMaxWindowDays ?? 366,
+        maxPayloadBytes: opts.icsMaxPayloadBytes ?? 1_000_000,
+        maxOccurrences: opts.icsMaxOccurrences ?? 1000,
+        defaultWindowDays: opts.icsDefaultImportWindowDays ?? 366,
+        processingLeaseSeconds: opts.icsProcessingLeaseSeconds ?? 120,
+      },
+    );
+    const imported = new ImportedCalendarSource(imports);
+    return new CalendarService(manual, [manual, course, imported], {
       timezone: opts.appTimezone ?? "Asia/Hong_Kong",
       maxItems: opts.calendarMaxItems ?? 1000,
       maxConflicts: opts.calendarMaxConflicts ?? 10000,

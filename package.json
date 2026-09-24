@@ -12,6 +12,7 @@
     "dev": "bun --bun fastify start --watch --log-level=debug --pretty-logs --options src/app.ts",
     "start": "bun --bun fastify start --log-level=info --options src/app.ts",
     "worker:academic-refresh": "bun src/workers/academic-refresh-cli.ts",
+    "worker:ics-import-recovery": "bun src/workers/ics-import-recovery-cli.ts",
     "test": "bun test --coverage --timeout=60000 test",
     "compile": "tsc && tsc -p test/tsconfig.json",
     "check": "biome ci .",
@@ -38,6 +39,7 @@
     "fastify-cli": "^8.0.2",
     "fastify-plugin": "^6.0.0",
     "highs": "^1.15.3",
+    "ical.js": "^2.2.1",
     "mongodb": "^7.6.0",
     "typebox": "^1.3.31"
   },

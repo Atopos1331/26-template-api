@@ -12,10 +12,12 @@ import { EventRepository } from "../../repositories/events.js";
 import {
   CalendarService,
   CoursePlanCalendarSource,
+  ImportedCalendarSource,
   ManualCalendarSource,
 } from "../../services/calendar.js";
 import { CoursePlanService } from "../../services/course-plans.js";
 import { EventService } from "../../services/events.js";
+import { IcsService } from "../../services/ics.js";
 
 const EventInput = Type.Object(
   {
@@ -103,11 +105,19 @@ const events: FastifyPluginAsync<AppOptions> = async (
   fastify: FastifyTypebox,
   opts,
 ) => {
+  fastify.addContentTypeParser(
+    "text/calendar",
+    { parseAs: "string", bodyLimit: opts.icsMaxPayloadBytes ?? 1_000_000 },
+    (_request, body, done) => done(null, body),
+  );
   const planService = () =>
     new CoursePlanService(
       new CoursePlanRepository(fastify.collections.coursePlans),
       new CourseCatalogRepository(fastify.mongo.db!),
-      new EventRepository(fastify.collections.events),
+      new EventRepository(
+        fastify.collections.events,
+        fastify.collections.eventImports,
+      ),
       fastify.collections.idempotencyRecords,
       {
         timezone: opts.appTimezone ?? "Asia/Hong_Kong",
@@ -134,23 +144,47 @@ const events: FastifyPluginAsync<AppOptions> = async (
     );
   const calendar = () => {
     const manual = new ManualCalendarSource(
-      new EventRepository(fastify.collections.events),
+      new EventRepository(
+        fastify.collections.events,
+        fastify.collections.eventImports,
+      ),
     );
     const course = new CoursePlanCalendarSource(
       (owner, window, planId, termCode) =>
         planService().calendarItems(owner, window, planId, termCode),
       (owner, key) => planService().resolvesCalendarKey(owner, key),
     );
-    return new CalendarService(manual, [manual, course], {
-      timezone: opts.appTimezone ?? "Asia/Hong_Kong",
-      maxItems: opts.calendarMaxItems ?? 1000,
-      maxConflicts: opts.calendarMaxConflicts ?? 10000,
-      upcomingHours: opts.timeBannerUpcomingHours ?? 24,
-    });
+    const imports = new IcsService(
+      fastify.collections.events,
+      fastify.collections.eventImports,
+      {
+        timezone: opts.appTimezone ?? "Asia/Hong_Kong",
+        maxWindowDays: opts.calendarMaxWindowDays ?? 366,
+        maxPayloadBytes: opts.icsMaxPayloadBytes ?? 1_000_000,
+        maxOccurrences: opts.icsMaxOccurrences ?? 1000,
+        defaultWindowDays: opts.icsDefaultImportWindowDays ?? 366,
+        processingLeaseSeconds: opts.icsProcessingLeaseSeconds ?? 120,
+        idempotencyRetentionSeconds: opts.idempotencyRetentionSeconds ?? 86400,
+      },
+      fastify.collections.idempotencyRecords,
+    );
+    return new CalendarService(
+      manual,
+      [manual, course, new ImportedCalendarSource(imports)],
+      {
+        timezone: opts.appTimezone ?? "Asia/Hong_Kong",
+        maxItems: opts.calendarMaxItems ?? 1000,
+        maxConflicts: opts.calendarMaxConflicts ?? 10000,
+        upcomingHours: opts.timeBannerUpcomingHours ?? 24,
+      },
+    );
   };
   const service = () =>
     new EventService(
-      new EventRepository(fastify.collections.events),
+      new EventRepository(
+        fastify.collections.events,
+        fastify.collections.eventImports,
+      ),
       fastify.collections.idempotencyRecords,
       {
         timezone: opts.appTimezone ?? "Asia/Hong_Kong",
@@ -161,12 +195,117 @@ const events: FastifyPluginAsync<AppOptions> = async (
         idempotencyRetentionSeconds: opts.idempotencyRetentionSeconds ?? 86400,
       },
       (owner, key) => calendar().canSupersede(owner, key),
+      (owner, rows) => imports().effectiveEvents(owner, rows),
+    );
+  const imports = () =>
+    new IcsService(
+      fastify.collections.events,
+      fastify.collections.eventImports,
+      {
+        timezone: opts.appTimezone ?? "Asia/Hong_Kong",
+        maxWindowDays: opts.calendarMaxWindowDays ?? 366,
+        maxPayloadBytes: opts.icsMaxPayloadBytes ?? 1_000_000,
+        maxOccurrences: opts.icsMaxOccurrences ?? 1000,
+        defaultWindowDays: opts.icsDefaultImportWindowDays ?? 366,
+        processingLeaseSeconds: opts.icsProcessingLeaseSeconds ?? 120,
+        idempotencyRetentionSeconds: opts.idempotencyRetentionSeconds ?? 86400,
+      },
+      fastify.collections.idempotencyRecords,
     );
 
   fastify.withAuth(async (scope) => {
     scope.register(async (routes) => {
       const protectedRoutes = routes as typeof scope;
       protectedRoutes.setErrorHandler(sendApiError);
+
+      protectedRoutes.post(
+        "/import/ics",
+        {
+          schema: {
+            ...common,
+            summary: "Import an ICS calendar",
+            querystring: Type.Object(
+              {
+                from: Type.Optional(Type.String()),
+                to: Type.Optional(Type.String()),
+                defaultBlocksTime: Type.Optional(Type.String()),
+              },
+              { additionalProperties: false },
+            ),
+            response: {
+              ...common.response,
+              200: Type.Object({}, { additionalProperties: true }),
+              201: Type.Object({}, { additionalProperties: true }),
+            },
+          },
+        },
+        async (request, reply) => {
+          const defaultBlocksTime =
+            request.query.defaultBlocksTime === undefined
+              ? undefined
+              : request.query.defaultBlocksTime === "true"
+                ? true
+                : request.query.defaultBlocksTime === "false"
+                  ? false
+                  : (() => {
+                      throw new EventError(
+                        "invalid_request",
+                        400,
+                        "defaultBlocksTime must be true or false",
+                      );
+                    })();
+          const result = await imports().import(
+            request.user.username,
+            request.body,
+            {
+              from: request.query.from,
+              to: request.query.to,
+              defaultBlocksTime,
+              idempotencyKey: request.headers["idempotency-key"],
+            },
+          );
+          return reply
+            .code(result.status)
+            .send({ data: result.body, meta: {} });
+        },
+      );
+
+      protectedRoutes.get(
+        "/imports",
+        {
+          schema: {
+            ...common,
+            summary: "List ICS imports",
+            response: {
+              ...common.response,
+              200: Type.Object({}, { additionalProperties: true }),
+            },
+          },
+        },
+        async (request) => ({
+          data: await imports().list(request.user.username),
+          meta: {},
+        }),
+      );
+
+      protectedRoutes.delete(
+        "/imports/:importId",
+        {
+          schema: {
+            ...common,
+            summary: "Delete an ICS import",
+            params: Type.Object({ importId: Type.String() }),
+            response: { ...common.response, 204: Type.Null() },
+          },
+        },
+        async (request, reply) => {
+          await imports().remove(
+            request.user.username,
+            request.params.importId,
+          );
+          return reply.code(204).send(null);
+        },
+      );
 
       protectedRoutes.post(
         "/",

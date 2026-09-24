@@ -49,6 +49,7 @@ import {
   detectConflicts,
 } from "../domain/calendar.js";
 import { expandCourseBundle } from "../domain/course-schedules.js";
+import { expandIcsSeries } from "../domain/ics-calendar.js";
 import {
   assertPlanItemInvariants,
   type CoursePlanItem,
@@ -679,6 +680,7 @@ export class CoursePlanService {
         owner: string,
         window: { from: string; to: string },
       ): AsyncIterable<WithId<EventDocument>>;
+      activeImportedEvents(owner: string): Promise<WithId<EventDocument>[]>;
       suppressedKeys(owner: string): Promise<string[]>;
     },
     private readonly records: import("mongodb").Collection<IdempotencyRecordDocument>,
@@ -889,24 +891,25 @@ export class CoursePlanService {
     const effectiveCourses = projected.filter(
       (item) => !suppressed.has(item.calendarKey),
     );
-    for await (const event of this.events.calendarCandidates(owner, window)) {
-      const expanded = event.recurrence
-        ? (await import("../domain/calendar.js")).expandManualEvent(
-            event,
-            window,
-            10000,
-          )
-        : (await import("../domain/calendar.js")).expandManualEvent(
-            event,
-            window,
-            10000,
-          );
+    const expandEvent = (await import("../domain/calendar.js"))
+      .expandManualEvent;
+    const manualEvents: WithId<EventDocument>[] = [];
+    for await (const event of this.events.calendarCandidates(owner, window))
+      manualEvents.push(event);
+    for (const event of manualEvents) {
+      const expanded = expandEvent(event, window, 10000);
       projected.push(...expanded.filter((item) => item.blocksTime));
     }
+    const effectiveImports = await this.events.activeImportedEvents(owner);
+    projected.push(
+      ...expandIcsSeries(effectiveImports, window, 10000).filter(
+        (item) => item.blocksTime,
+      ),
+    );
     const result = detectConflicts(
       [
         ...effectiveCourses,
-        ...projected.filter((item) => item.source === "manual"),
+        ...projected.filter((item) => ["manual", "ics"].includes(item.source)),
       ],
       termTimezone,
       10000,

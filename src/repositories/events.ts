@@ -1,7 +1,10 @@
 import { type Collection, type Filter, ObjectId, type WithId } from "mongodb";
 import type { CalendarWindow } from "../domain/calendar.js";
 import { EventError } from "../domain/events.js";
-import type { EventDocument } from "../plugins/init-mongo.js";
+import type {
+  EventDocument,
+  EventImportDocument,
+} from "../plugins/init-mongo.js";
 
 export function eventId(id: string): ObjectId {
   if (!/^[0-9a-f]{24}$/.test(id)) {
@@ -20,7 +23,10 @@ export type EventFilters = {
 };
 
 export class EventRepository {
-  constructor(private readonly events: Collection<EventDocument>) {}
+  constructor(
+    private readonly events: Collection<EventDocument>,
+    private readonly imports?: Collection<EventImportDocument>,
+  ) {}
 
   async insert(event: WithId<EventDocument>) {
     await this.events.insertOne(event);
@@ -90,6 +96,46 @@ export class EventRepository {
         { recurrence: { $exists: true } },
       ],
     });
+  }
+
+  importedCalendarCandidates(ownerUsername: string, window: CalendarWindow) {
+    return this.events.find({
+      ownerUsername,
+      source: "ics",
+      startsAt: { $lt: window.to },
+      $or: [
+        { endsAt: { $gt: window.from } },
+        { recurrence: { $exists: true } },
+      ],
+    });
+  }
+
+  async activeImportedEvents(ownerUsername: string) {
+    if (!this.imports) return [];
+    const manifests = await this.imports
+      .find({ ownerUsername, source: "ics", status: "active" })
+      .sort({ activatedAt: -1, _id: -1 })
+      .toArray();
+    const selected = new Map<string, ObjectId>();
+    for (const manifest of manifests) {
+      const rows = await this.events
+        .find({ ownerUsername, source: "ics", importId: manifest._id })
+        .project<{ externalId?: string }>({ externalId: 1 })
+        .toArray();
+      for (const row of rows) {
+        const uid = String(row.externalId ?? "");
+        if (!selected.has(uid)) selected.set(uid, manifest._id);
+      }
+    }
+    if (!selected.size) return [];
+    return this.events
+      .find({
+        ownerUsername,
+        source: "ics",
+        importId: { $in: [...selected.values()] },
+        externalId: { $in: [...selected.keys()] },
+      })
+      .toArray();
   }
 
   async suppressedKeys(ownerUsername: string) {
