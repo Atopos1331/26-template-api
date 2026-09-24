@@ -67,6 +67,20 @@ function autoPlanTokenSigningKey(env: Env): string {
   return randomBytes(32).toString("base64url");
 }
 
+function shareTokenReplayEncryptionKey(env: Env): string {
+  const value = env.SHARE_TOKEN_REPLAY_ENCRYPTION_KEY;
+  if (value !== undefined) {
+    if (Buffer.byteLength(value) < 32) {
+      throw new ConfigurationError("SHARE_TOKEN_REPLAY_ENCRYPTION_KEY");
+    }
+    return value;
+  }
+  if (env.NODE_ENV === "production") {
+    throw new ConfigurationError("SHARE_TOKEN_REPLAY_ENCRYPTION_KEY");
+  }
+  return randomBytes(32).toString("base64url");
+}
+
 type OptionArgs = {
   env: Env;
   envName: string;
@@ -183,6 +197,13 @@ export type AppOptions = {
   appTimezone?: string;
   cursorSigningKey?: string;
   cursorTtlSeconds?: number;
+  shareTokenReplayEncryptionKey?: string;
+  shareDefaultExpirySeconds?: number;
+  shareMaxExpirySeconds?: number;
+  shareReadsPerMinute?: number;
+  discoverabilityDefaultExpirySeconds?: number;
+  discoverabilityMaxExpirySeconds?: number;
+  friendSearchesPerMinute?: number;
   autoPlanTokenSigningKey?: string;
   autoPlanTokenTtlSeconds?: number;
   autoPlanMaxDesiredCourses?: number;
@@ -242,6 +263,33 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
     appTimezone: applicationTimezone(env),
     cursorSigningKey: cursorSigningKey(env),
     cursorTtlSeconds: positiveInteger(env, "CURSOR_TTL_SECONDS", 900),
+    shareTokenReplayEncryptionKey: shareTokenReplayEncryptionKey(env),
+    shareDefaultExpirySeconds: positiveInteger(
+      env,
+      "SHARE_DEFAULT_EXPIRY_SECONDS",
+      604800,
+    ),
+    shareMaxExpirySeconds: positiveInteger(
+      env,
+      "SHARE_MAX_EXPIRY_SECONDS",
+      2592000,
+    ),
+    shareReadsPerMinute: positiveInteger(env, "SHARE_READS_PER_MINUTE", 60),
+    discoverabilityDefaultExpirySeconds: positiveInteger(
+      env,
+      "DISCOVERABILITY_DEFAULT_EXPIRY_SECONDS",
+      1209600,
+    ),
+    discoverabilityMaxExpirySeconds: positiveInteger(
+      env,
+      "DISCOVERABILITY_MAX_EXPIRY_SECONDS",
+      7776000,
+    ),
+    friendSearchesPerMinute: positiveInteger(
+      env,
+      "FRIEND_SEARCHES_PER_MINUTE",
+      30,
+    ),
     autoPlanTokenSigningKey: autoPlanTokenSigningKey(env),
     autoPlanTokenTtlSeconds: positiveInteger(
       env,
@@ -374,6 +422,14 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
       3600,
     ),
   };
+
+  if (options.shareDefaultExpirySeconds! > options.shareMaxExpirySeconds!)
+    throw new ConfigurationError("SHARE_DEFAULT_EXPIRY_SECONDS");
+  if (
+    options.discoverabilityDefaultExpirySeconds! >
+    options.discoverabilityMaxExpirySeconds!
+  )
+    throw new ConfigurationError("DISCOVERABILITY_DEFAULT_EXPIRY_SECONDS");
 
   return options;
 }

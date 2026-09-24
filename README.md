@@ -66,12 +66,23 @@ projects observations asynchronously.
 operator-loaded Common Core classification. It reports source/version metadata
 and distinct offered course-code counts; it does not claim degree eligibility.
 
+## Plan sharing and section discovery
+
+Active plans can be shared with a revocable capability token using
+`POST /plans/:id/shares`; the public `GET /shared-plans/:shareToken` route
+returns only the fixed snapshot. The token is returned at creation and on a
+valid idempotent replay. Opted-in users can find other opted-in users through
+`POST /sections/:sectionId/discoverability` and
+`GET /sections/:sectionId/classmates`; results are planning matches, not
+verified enrollment.
+
 ## Environment
 
-Copy `.env.example` to `.env` for local configuration. `CURSOR_SIGNING_KEY` is
-required when `NODE_ENV=production`; use a unique random secret of at least
-32 bytes and keep it stable across API instances. Compose is a localhost-only
-development setup and uses a process-local signing key by default.
+Copy `.env.example` to `.env` for local configuration. `CURSOR_SIGNING_KEY` and
+`SHARE_TOKEN_REPLAY_ENCRYPTION_KEY` are required when `NODE_ENV=production`; use
+unique random secrets of at least 32 bytes and keep them stable across API
+instances. Compose is a localhost-only development setup and uses process-local
+keys by default.
 
 | Variable | What it does |
 | --- | --- |
@@ -81,6 +92,13 @@ development setup and uses a process-local signing key by default.
 | `APP_TIMEZONE` | IANA timezone for timetable/calendar features. Defaults to `Asia/Hong_Kong`; invalid values fail startup. |
 | `CURSOR_SIGNING_KEY` | Signs event list cursors; required in production. |
 | `CURSOR_TTL_SECONDS` | Cursor lifetime, default 900. |
+| `SHARE_TOKEN_REPLAY_ENCRYPTION_KEY` | Encrypts one-time share tokens stored for idempotent replay; required in production. |
+| `SHARE_DEFAULT_EXPIRY_SECONDS` | Default share lifetime, 604800 seconds. |
+| `SHARE_MAX_EXPIRY_SECONDS` | Maximum share lifetime, 2592000 seconds. |
+| `SHARE_READS_PER_MINUTE` | Per-IP shared snapshot read limit, default 60. |
+| `DISCOVERABILITY_DEFAULT_EXPIRY_SECONDS` | Default section opt-in lifetime, 1209600 seconds. |
+| `DISCOVERABILITY_MAX_EXPIRY_SECONDS` | Maximum section opt-in lifetime, 7776000 seconds. |
+| `FRIEND_SEARCHES_PER_MINUTE` | Per-user and per-IP classmate search limit, default 30. |
 | `RECURRENCE_MAX_SPAN_DAYS` | Longest accepted weekly rule, default 1461. |
 | `IDEMPOTENCY_RETENTION_SECONDS` | Replay window for keyed event creates, default 86400. |
 | `CALENDAR_MAX_WINDOW_DAYS` | Largest calendar query window, default 366 local days. |

@@ -33,6 +33,7 @@ export class PlanError extends Error {
     readonly statusCode: number,
     message: string,
     readonly fields?: Record<string, string>,
+    readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = "PlanError";

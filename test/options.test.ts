@@ -101,9 +101,11 @@ describe("loadOptions", () => {
       NODE_ENV: "production",
       CURSOR_SIGNING_KEY: "x".repeat(32),
       AUTO_PLAN_TOKEN_SIGNING_KEY: "y".repeat(32),
+      SHARE_TOKEN_REPLAY_ENCRYPTION_KEY: "z".repeat(32),
     });
     expect(configured.cursorSigningKey).toBe("x".repeat(32));
     expect(configured.autoPlanTokenSigningKey).toBe("y".repeat(32));
+    expect(configured.shareTokenReplayEncryptionKey).toBe("z".repeat(32));
   });
 
   test("requires an independent auto-plan token key in production", () => {
@@ -111,11 +113,42 @@ describe("loadOptions", () => {
       loadOptions({
         NODE_ENV: "production",
         CURSOR_SIGNING_KEY: "x".repeat(32),
+        SHARE_TOKEN_REPLAY_ENCRYPTION_KEY: "z".repeat(32),
       }),
     ).toThrow("AUTO_PLAN_TOKEN_SIGNING_KEY");
     expect(() => loadOptions({ AUTO_PLAN_TOKEN_SIGNING_KEY: "short" })).toThrow(
       "AUTO_PLAN_TOKEN_SIGNING_KEY",
     );
+  });
+
+  test("requires a production share replay key and validates sharing limits", () => {
+    expect(() =>
+      loadOptions({
+        NODE_ENV: "production",
+        CURSOR_SIGNING_KEY: "x".repeat(32),
+        AUTO_PLAN_TOKEN_SIGNING_KEY: "y".repeat(32),
+      }),
+    ).toThrow("SHARE_TOKEN_REPLAY_ENCRYPTION_KEY");
+    expect(() =>
+      loadOptions({ SHARE_TOKEN_REPLAY_ENCRYPTION_KEY: "short" }),
+    ).toThrow("SHARE_TOKEN_REPLAY_ENCRYPTION_KEY");
+    expect(() =>
+      loadOptions({
+        SHARE_DEFAULT_EXPIRY_SECONDS: "20",
+        SHARE_MAX_EXPIRY_SECONDS: "10",
+      }),
+    ).toThrow("SHARE_DEFAULT_EXPIRY_SECONDS");
+    for (const name of [
+      "SHARE_DEFAULT_EXPIRY_SECONDS",
+      "SHARE_MAX_EXPIRY_SECONDS",
+      "SHARE_READS_PER_MINUTE",
+      "DISCOVERABILITY_DEFAULT_EXPIRY_SECONDS",
+      "DISCOVERABILITY_MAX_EXPIRY_SECONDS",
+      "FRIEND_SEARCHES_PER_MINUTE",
+    ]) {
+      expect(() => loadOptions({ [name]: "0" })).toThrow(name);
+      expect(() => loadOptions({ [name]: "1.5" })).toThrow(name);
+    }
   });
 
   test("validates positive event retention and cursor limits", () => {

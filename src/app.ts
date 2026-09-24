@@ -74,6 +74,11 @@ const app: FastifyPluginAsync<AppOptions> = async (
           description: "Academic terms, courses, sections and quota",
         },
         { name: "Watching", description: "Quota watches and notifications" },
+        {
+          name: "Planning",
+          description: "Course planning and private sharing",
+        },
+        { name: "Discoverability", description: "Opt-in section discovery" },
       ],
       components: {
         securitySchemes: {

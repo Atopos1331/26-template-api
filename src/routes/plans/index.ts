@@ -10,6 +10,7 @@ import { CourseCatalogRepository } from "../../repositories/course-catalog.js";
 import { CoursePlanRepository } from "../../repositories/course-plans.js";
 import { EventRepository } from "../../repositories/events.js";
 import { CoursePlanService } from "../../services/course-plans.js";
+import { SharingService } from "../../services/sharing.js";
 
 const ErrorResponse = Type.Object({
   error: Type.Object({
@@ -128,6 +129,20 @@ const AutoPlanResponse = Type.Object(
   { additionalProperties: true },
 );
 const ApplyResponse = PlanResponse;
+const ShareResponse = Type.Object(
+  {
+    data: Type.Object({}, { additionalProperties: true }),
+    meta: Type.Object({}, { additionalProperties: true }),
+  },
+  { additionalProperties: true },
+);
+const ShareListResponse = Type.Object(
+  {
+    items: Type.Array(Type.Object({}, { additionalProperties: true })),
+    meta: Type.Object({}, { additionalProperties: true }),
+  },
+  { additionalProperties: true },
+);
 const common = {
   tags: ["Planning"],
   security: [{ Auth: [] }],
@@ -177,6 +192,32 @@ function service(fastify: FastifyTypebox, opts: AppOptions) {
   );
 }
 
+function sharing(fastify: FastifyTypebox, opts: AppOptions) {
+  return new SharingService(
+    fastify.mongo.db!,
+    fastify.collections.coursePlans,
+    fastify.collections.sharedPlans,
+    fastify.collections.idempotencyRecords,
+    new CourseCatalogRepository(fastify.mongo.db!),
+    {
+      defaultExpirySeconds: opts.shareDefaultExpirySeconds ?? 604800,
+      maxExpirySeconds: opts.shareMaxExpirySeconds ?? 2592000,
+      discoverabilityDefaultExpirySeconds:
+        opts.discoverabilityDefaultExpirySeconds ?? 1209600,
+      discoverabilityMaxExpirySeconds:
+        opts.discoverabilityMaxExpirySeconds ?? 7776000,
+      replayKey:
+        opts.shareTokenReplayEncryptionKey ??
+        "development-only-share-replay-key-32-bytes",
+      cursorKey: opts.cursorSigningKey ?? "development-only-cursor-signing-key",
+      cursorTtlSeconds: opts.cursorTtlSeconds ?? 900,
+      shareReadsPerMinute: opts.shareReadsPerMinute ?? 60,
+      friendSearchesPerMinute: opts.friendSearchesPerMinute ?? 30,
+      idempotencyRetentionSeconds: opts.idempotencyRetentionSeconds ?? 86400,
+    },
+  );
+}
+
 function listLimit(value: string | undefined) {
   if (value === undefined) return 50;
   if (!/^[1-9]\d*$/.test(value) || Number(value) > 100)
@@ -199,6 +240,72 @@ const plans: FastifyPluginAsync<AppOptions> = async (
         id: Type.String(),
         itemId: Type.String(),
       });
+
+      protectedRoutes.post(
+        "/:id/shares",
+        {
+          schema: {
+            ...common,
+            summary: "Create a read-only plan share",
+            params,
+            body: Type.Object(
+              { expiresInSeconds: Type.Optional(Type.Integer({ minimum: 1 })) },
+              { additionalProperties: false },
+            ),
+            response: { ...common.response, 201: ShareResponse },
+          },
+        },
+        async (request, reply) => {
+          const result = await sharing(fastify, opts).create(
+            request.user.username,
+            request.params.id,
+            request.body,
+            request.headers["idempotency-key"],
+          );
+          return reply
+            .code(result.status)
+            .send({ data: result.body, meta: {} });
+        },
+      );
+
+      protectedRoutes.get(
+        "/:id/shares",
+        {
+          schema: {
+            ...common,
+            summary: "List plan share metadata",
+            params,
+            response: { ...common.response, 200: ShareListResponse },
+          },
+        },
+        async (request) => ({
+          items: await sharing(fastify, opts).list(
+            request.user.username,
+            request.params.id,
+          ),
+          meta: {},
+        }),
+      );
+
+      protectedRoutes.delete(
+        "/:id/shares/:shareId",
+        {
+          schema: {
+            ...common,
+            summary: "Revoke a plan share",
+            params: Type.Object({ id: Type.String(), shareId: Type.String() }),
+            response: { ...common.response, 204: Type.Null() },
+          },
+        },
+        async (request, reply) => {
+          await sharing(fastify, opts).revoke(
+            request.user.username,
+            request.params.id,
+            request.params.shareId,
+          );
+          return reply.code(204).send(null);
+        },
+      );
 
       protectedRoutes.post(
         "/",

@@ -80,6 +80,7 @@ export type IdempotencyRecordDocument = {
   idempotencyKeyHash: string;
   requestHash: string;
   operationId?: string;
+  claimToken?: string;
   state: IdempotencyRecordState;
   responseStatus?: number;
   responseBody?: unknown;
@@ -101,6 +102,51 @@ export type CoursePlanDocument = {
   lastAutoPlanApply?: AutoPlanApplyMarker;
   createdAt: string;
   updatedAt: string;
+};
+
+export type SharedPlanDocument = {
+  _id: ObjectId;
+  shareId: string;
+  planId: ObjectId;
+  ownerUsername: string;
+  tokenHash: string;
+  operationId: string;
+  expiresAt: Date;
+  revokedAt?: Date | null;
+  snapshotVersion: number;
+  snapshot: {
+    displayLabel: string;
+    termSummary: string;
+    selectedCourses: Array<{
+      courseCode: string;
+      title: string;
+      sectionLabels: string[];
+      meetings: Array<Record<string, unknown>>;
+      room?: string;
+    }>;
+    generatedAt: string;
+  };
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SectionDiscoverabilityDocument = {
+  _id: ObjectId;
+  recordId: string;
+  ownerUsername: string;
+  sectionId: string;
+  displayName: string;
+  displayNameKey: string;
+  expiresAt: Date;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SharingRateLimitDocument = {
+  keyHash: string;
+  windowStart: Date;
+  expiresAt: Date;
+  count: number;
 };
 
 /**
@@ -351,6 +397,53 @@ async function initializeCollections(fastify: FastifyInstance): Promise<void> {
     { ownerUsername: 1, termCode: 1, status: 1 },
     { name: "course_plans_owner_term" },
   );
+
+  const sharedPlans = db.collection<SharedPlanDocument>("sharedPlans");
+  await sharedPlans.createIndex(
+    { tokenHash: 1 },
+    { unique: true, name: "shared_plan_token_hash" },
+  );
+  await sharedPlans.createIndex(
+    { ownerUsername: 1, operationId: 1 },
+    { unique: true, name: "shared_plan_owner_operation" },
+  );
+  await sharedPlans.createIndex(
+    { ownerUsername: 1, planId: 1, createdAt: -1, shareId: -1 },
+    { name: "shared_plan_owner_list" },
+  );
+  await sharedPlans.createIndex(
+    { expiresAt: 1, revokedAt: 1 },
+    { name: "shared_plan_expiry" },
+  );
+  const sectionDiscoverability = db.collection<SectionDiscoverabilityDocument>(
+    "sectionDiscoverability",
+  );
+  await sectionDiscoverability.createIndex(
+    { ownerUsername: 1, sectionId: 1 },
+    { unique: true, name: "section_discoverability_owner_section" },
+  );
+  const sharingRateLimits =
+    db.collection<SharingRateLimitDocument>("sharingRateLimits");
+  await sharingRateLimits.createIndex(
+    { keyHash: 1, windowStart: 1 },
+    { unique: true, name: "sharing_rate_limit_bucket" },
+  );
+  await sharingRateLimits.createIndex(
+    { expiresAt: 1 },
+    { expireAfterSeconds: 0, name: "sharing_rate_limit_expiry" },
+  );
+  await sectionDiscoverability.createIndex(
+    { sectionId: 1, expiresAt: 1 },
+    { name: "section_discoverability_section_expiry" },
+  );
+  await sectionDiscoverability.createIndex(
+    { sectionId: 1, displayNameKey: 1, recordId: 1, expiresAt: 1 },
+    { name: "section_discoverability_section_sort" },
+  );
+  await sectionDiscoverability.createIndex(
+    { ownerUsername: 1, expiresAt: 1 },
+    { name: "section_discoverability_owner_expiry" },
+  );
   await coursePlans.createIndex(
     { ownerUsername: 1, updatedAt: -1, _id: -1 },
     { name: "course_plans_owner_updated" },
@@ -371,6 +464,9 @@ async function initializeCollections(fastify: FastifyInstance): Promise<void> {
     eventImports,
     idempotencyRecords,
     coursePlans,
+    sharedPlans,
+    sectionDiscoverability,
+    sharingRateLimits,
     ...academic,
   });
 }
@@ -405,6 +501,9 @@ declare module "fastify" {
       eventImports: Collection<EventImportDocument>;
       idempotencyRecords: Collection<IdempotencyRecordDocument>;
       coursePlans: Collection<CoursePlanDocument>;
+      sharedPlans: Collection<SharedPlanDocument>;
+      sectionDiscoverability: Collection<SectionDiscoverabilityDocument>;
+      sharingRateLimits: Collection<SharingRateLimitDocument>;
     };
   }
 }

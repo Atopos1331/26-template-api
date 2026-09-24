@@ -65,6 +65,7 @@ export function sendApiError(
   const response = reply
     .code(status)
     .header("content-type", "application/json; charset=utf-8");
-  if (code === "rate_limited") response.header("retry-after", "1");
+  if (error instanceof PlanError && error.retryAfterSeconds !== undefined)
+    response.header("retry-after", String(error.retryAfterSeconds));
   return response.send(JSON.stringify(body));
 }
