@@ -65,6 +65,27 @@ test("valid bearer token reaches the handler", async () => {
   assert.equal(res.payload, "alice");
 });
 
+test("configured users authenticate and replace the development defaults", async () => {
+  const token = "custom-production-token-".padEnd(32, "x");
+  const app = await buildAuthApp({
+    users: [{ username: "operator", name: "Operator", token }],
+  });
+  onTestFinished(() => app.close());
+
+  const configured = await app.inject({
+    url: "/auth-example",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert.equal(configured.statusCode, 200);
+  assert.equal(configured.payload, "operator");
+
+  const developmentDefault = await app.inject({
+    url: "/auth-example",
+    headers: { authorization: "Bearer alice-dev-token" },
+  });
+  assert.equal(developmentDefault.statusCode, 401);
+});
+
 test("public routes stay open while auth-example is protected", async () => {
   const app = await buildAuthApp();
   onTestFinished(() => app.close());

@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { AutoloadPluginOptions } from "@fastify/autoload";
 import type { FastifyServerOptions } from "fastify";
+import type { InternalUser } from "./auth/users.js";
 import type { AuthPluginOptions } from "./plugins/auth.js";
 import type { InitMongoPluginOptions } from "./plugins/init-mongo.js";
 
@@ -154,8 +155,61 @@ export const getBooleanOption = function getBooleanOption(
   const normalized = val.trim().toLowerCase();
   if (["1", "true", "yes", "y"].includes(normalized)) return true;
   if (["0", "false", "no", "n"].includes(normalized)) return false;
-  return undefined;
+  if (!normalized && !args.required) return undefined;
+  throw new ConfigurationError(args.envName);
 } as GetBooleanOption;
+
+function configuredUsers(env: Env): InternalUser[] | undefined {
+  const raw = env.AUTH_USERS?.trim();
+  if (!raw) {
+    if (env.NODE_ENV === "production")
+      throw new ConfigurationError("AUTH_USERS");
+    return undefined;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ConfigurationError("AUTH_USERS");
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 1000)
+    throw new ConfigurationError("AUTH_USERS");
+
+  const usernames = new Set<string>();
+  const tokens = new Set<string>();
+  const users = parsed.map((value): InternalUser => {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new ConfigurationError("AUTH_USERS");
+    const user = value as Record<string, unknown>;
+    const { username, name, token } = user;
+    if (
+      Object.keys(user).some(
+        (field) => !["username", "name", "token"].includes(field),
+      ) ||
+      typeof username !== "string" ||
+      !/^[A-Za-z0-9_.-]{1,64}$/.test(username) ||
+      (name !== null && typeof name !== "string") ||
+      (typeof name === "string" && name.length > 100) ||
+      typeof token !== "string" ||
+      !/^[A-Za-z0-9._~+/-]+={0,}$/.test(token) ||
+      Buffer.byteLength(token) > 4096 ||
+      (env.NODE_ENV === "production" && Buffer.byteLength(token) < 32) ||
+      usernames.has(username) ||
+      tokens.has(token)
+    )
+      throw new ConfigurationError("AUTH_USERS");
+    usernames.add(username);
+    tokens.add(token);
+    return {
+      username,
+      name: name as string | null,
+      token: token as string,
+    };
+  });
+
+  return users;
+}
 
 export function lazyOptions<T extends object>(loadOptions: () => T): T {
   let options: T | undefined;
@@ -243,6 +297,13 @@ export type AppOptions = {
   AuthPluginOptions;
 
 export function loadOptions(env: Env = Bun.env): AppOptions {
+  const authSkip = getBooleanOption(env, "AUTH_SKIP", false);
+  if (env.NODE_ENV === "production" && authSkip)
+    throw new ConfigurationError("AUTH_SKIP");
+  const cursorKey = cursorSigningKey(env);
+  const replayKey = shareTokenReplayEncryptionKey(env);
+  const autoPlanKey = autoPlanTokenSigningKey(env);
+  const users = configuredUsers(env);
   const currentTerm = env.ACADEMIC_CURRENT_TERM_CODE?.trim();
   if (currentTerm && !/^\d{2}(10|20|30|40)$/.test(currentTerm))
     throw new ConfigurationError("ACADEMIC_CURRENT_TERM_CODE");
@@ -259,11 +320,12 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
     // crash startup.
     mongoUri: getOption(env, "MONGO_URI", false)?.trim() || undefined,
     mongoTestUri: getOption(env, "MONGO_TEST_URI", false)?.trim() || undefined,
-    authSkip: getBooleanOption(env, "AUTH_SKIP", false),
+    authSkip,
+    users,
     appTimezone: applicationTimezone(env),
-    cursorSigningKey: cursorSigningKey(env),
+    cursorSigningKey: cursorKey,
     cursorTtlSeconds: positiveInteger(env, "CURSOR_TTL_SECONDS", 900),
-    shareTokenReplayEncryptionKey: shareTokenReplayEncryptionKey(env),
+    shareTokenReplayEncryptionKey: replayKey,
     shareDefaultExpirySeconds: positiveInteger(
       env,
       "SHARE_DEFAULT_EXPIRY_SECONDS",
@@ -290,7 +352,7 @@ export function loadOptions(env: Env = Bun.env): AppOptions {
       "FRIEND_SEARCHES_PER_MINUTE",
       30,
     ),
-    autoPlanTokenSigningKey: autoPlanTokenSigningKey(env),
+    autoPlanTokenSigningKey: autoPlanKey,
     autoPlanTokenTtlSeconds: positiveInteger(
       env,
       "AUTO_PLAN_TOKEN_TTL_SECONDS",

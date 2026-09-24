@@ -78,17 +78,21 @@ verified enrollment.
 
 ## Environment
 
-Copy `.env.example` to `.env` for local configuration. `CURSOR_SIGNING_KEY` and
-`SHARE_TOKEN_REPLAY_ENCRYPTION_KEY` are required when `NODE_ENV=production`; use
-unique random secrets of at least 32 bytes and keep them stable across API
-instances. Compose is a localhost-only development setup and uses process-local
-keys by default.
+Copy `.env.example` to `.env` for local configuration. `CURSOR_SIGNING_KEY`,
+`AUTO_PLAN_TOKEN_SIGNING_KEY`, and `SHARE_TOKEN_REPLAY_ENCRYPTION_KEY` are
+required when `NODE_ENV=production`; use unique random secrets of at least 32
+bytes and keep them stable across API instances. Production also requires
+`AUTH_USERS`, a JSON array of explicit users with unique bearer tokens of at
+least 32 bytes. The built-in Alice/Bob tokens are used only outside production,
+and production rejects `AUTH_SKIP=true`. Compose is a localhost-only development
+setup and uses process-local keys by default.
 
 | Variable | What it does |
 | --- | --- |
 | `MONGO_URI` | MongoDB URI for dev. Unset means in-memory. |
 | `MONGO_TEST_URI` | Dedicated database for full-app MongoDB tests. Unset means in-memory; do not point it at the app database. |
 | `AUTH_SKIP` | Set to `true` to turn auth off locally. |
+| `AUTH_USERS` | JSON array of `{username,name,token}` users; required in production. Tokens must be unique and at least 32 bytes there. |
 | `APP_TIMEZONE` | IANA timezone for timetable/calendar features. Defaults to `Asia/Hong_Kong`; invalid values fail startup. |
 | `CURSOR_SIGNING_KEY` | Signs event list cursors; required in production. |
 | `CURSOR_TTL_SECONDS` | Cursor lifetime, default 900. |

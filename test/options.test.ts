@@ -26,6 +26,10 @@ describe("loadOptions", () => {
     expect(options.authSkip).toBe(false);
   });
 
+  test("rejects an unrecognized AUTH_SKIP value", () => {
+    expect(() => loadOptions({ AUTH_SKIP: "treu" })).toThrow("AUTH_SKIP");
+  });
+
   test("blank mongo URIs count as unset", () => {
     // Candidates blank a variable in .env to "remove" it; the in-memory
     // fallback must kick in rather than crash startup.
@@ -102,6 +106,9 @@ describe("loadOptions", () => {
       CURSOR_SIGNING_KEY: "x".repeat(32),
       AUTO_PLAN_TOKEN_SIGNING_KEY: "y".repeat(32),
       SHARE_TOKEN_REPLAY_ENCRYPTION_KEY: "z".repeat(32),
+      AUTH_USERS: JSON.stringify([
+        { username: "operator", name: "Operator", token: "u".repeat(32) },
+      ]),
     });
     expect(configured.cursorSigningKey).toBe("x".repeat(32));
     expect(configured.autoPlanTokenSigningKey).toBe("y".repeat(32));
@@ -149,6 +156,74 @@ describe("loadOptions", () => {
       expect(() => loadOptions({ [name]: "0" })).toThrow(name);
       expect(() => loadOptions({ [name]: "1.5" })).toThrow(name);
     }
+  });
+
+  test("requires explicit production users with unique strong bearer tokens", () => {
+    const keys = {
+      NODE_ENV: "production",
+      CURSOR_SIGNING_KEY: "x".repeat(32),
+      AUTO_PLAN_TOKEN_SIGNING_KEY: "y".repeat(32),
+      SHARE_TOKEN_REPLAY_ENCRYPTION_KEY: "z".repeat(32),
+    };
+    expect(() => loadOptions(keys)).toThrow("AUTH_USERS");
+    expect(() => loadOptions({ ...keys, AUTH_USERS: "not-json" })).toThrow(
+      "AUTH_USERS",
+    );
+    expect(() => loadOptions({ ...keys, AUTH_USERS: "[]" })).toThrow(
+      "AUTH_USERS",
+    );
+    expect(() =>
+      loadOptions({
+        ...keys,
+        AUTH_USERS: JSON.stringify([
+          { username: "alice", name: "Alice", token: "a".repeat(32) },
+          { username: "alice", name: "Other", token: "b".repeat(32) },
+        ]),
+      }),
+    ).toThrow("AUTH_USERS");
+    expect(() =>
+      loadOptions({
+        ...keys,
+        AUTH_USERS: JSON.stringify([
+          { username: "alice", name: "Alice", token: "a".repeat(32) },
+          { username: "bob", name: "Bob", token: "a".repeat(32) },
+        ]),
+      }),
+    ).toThrow("AUTH_USERS");
+    expect(() =>
+      loadOptions({
+        ...keys,
+        AUTH_USERS: JSON.stringify([
+          { username: "alice", name: "Alice", token: "short" },
+        ]),
+      }),
+    ).toThrow("AUTH_USERS");
+    for (const token of [`${"a".repeat(31)} `, "密".repeat(16)]) {
+      expect(() =>
+        loadOptions({
+          ...keys,
+          AUTH_USERS: JSON.stringify([
+            { username: "alice", name: "Alice", token },
+          ]),
+        }),
+      ).toThrow("AUTH_USERS");
+    }
+
+    const configured = loadOptions({
+      ...keys,
+      AUTH_USERS: JSON.stringify([
+        { username: "alice", name: "Alice", token: "a".repeat(32) },
+      ]),
+    });
+    expect(configured.users).toEqual([
+      { username: "alice", name: "Alice", token: "a".repeat(32) },
+    ]);
+  });
+
+  test("does not allow auth bypass in production", () => {
+    expect(() =>
+      loadOptions({ NODE_ENV: "production", AUTH_SKIP: "true" }),
+    ).toThrow("AUTH_SKIP");
   });
 
   test("validates positive event retention and cursor limits", () => {

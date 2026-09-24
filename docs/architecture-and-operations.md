@@ -21,8 +21,9 @@ curl http://localhost:3000/health
 
 Without `MONGO_URI`, development and tests create an in-memory MongoDB. Set
 `MONGO_URI` when data must survive a process restart. The sample users and
-bearer tokens in `src/auth/users.ts` are for the technical-test environment;
-replace them before any real deployment.
+bearer tokens in `src/auth/users.ts` are for local development and tests.
+Production startup requires `AUTH_USERS`, a JSON array of explicit users with
+unique bearer tokens of at least 32 bytes, and rejects `AUTH_SKIP=true`.
 
 ## Compose topology
 
@@ -148,11 +149,11 @@ course-code counts. It does not determine degree eligibility.
 ## Security and privacy
 
 Use stable, unique secrets of at least 32 bytes for cursor signing, auto-plan
-tokens, and share-token replay encryption in production. Rotate them through a
-planned deployment because old cursors or encrypted idempotency replays become
-invalid after rotation. Keep MongoDB and the Compose API bound to trusted
-network interfaces, replace sample bearer users, and avoid logging capability
-tokens or raw ICS payloads.
+tokens, share-token replay encryption, and production bearer users. Rotate them
+through a planned deployment because old cursors or encrypted idempotency
+replays become invalid after rotation. Keep MongoDB and the Compose API bound
+to trusted network interfaces, and avoid logging capability tokens or raw ICS
+payloads.
 
 Sharing is opt-in, revocable, expiry-bounded, and snapshot-based. Discovery is
 also opt-in and returns only an alias, section label, and coarse opt-in date;

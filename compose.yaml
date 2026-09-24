@@ -25,6 +25,7 @@ services:
       APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Hong_Kong}
       ACADEMIC_CURRENT_TERM_CODE: ${ACADEMIC_CURRENT_TERM_CODE:-}
       AUTH_SKIP: "false"
+      AUTH_USERS: ${AUTH_USERS:-}
     depends_on:
       mongodb:
         condition: service_healthy

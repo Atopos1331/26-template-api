@@ -241,7 +241,7 @@ export class CourseCatalogRepository {
     return this.db
       .collection("quotaSnapshots")
       .find({ source: ACADEMIC_SOURCE, sectionId: { $in: sectionIds } })
-      .sort({ observedAt: 1, snapshotId: 1 })
+      .sort({ observedAt: -1, snapshotId: -1 })
       .limit(50_000)
       .toArray();
   }
@@ -251,7 +251,7 @@ export class CourseCatalogRepository {
     return this.db
       .collection("quotaSnapshots")
       .find({ source: ACADEMIC_SOURCE, sectionId: { $in: sectionIds } })
-      .sort({ observedAt: 1, snapshotId: 1 })
+      .sort({ observedAt: -1, snapshotId: -1 })
       .limit(50_000)
       .toArray();
   }
