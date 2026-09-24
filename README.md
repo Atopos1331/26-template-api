@@ -99,6 +99,15 @@ keys by default.
 | `DISCOVERABILITY_DEFAULT_EXPIRY_SECONDS` | Default section opt-in lifetime, 1209600 seconds. |
 | `DISCOVERABILITY_MAX_EXPIRY_SECONDS` | Maximum section opt-in lifetime, 7776000 seconds. |
 | `FRIEND_SEARCHES_PER_MINUTE` | Per-user and per-IP classmate search limit, default 30. |
+| `AUTO_PLAN_TOKEN_SIGNING_KEY` | Signs auto-plan option tokens; required in production. |
+| `AUTO_PLAN_TOKEN_TTL_SECONDS` | Auto-plan option token lifetime, default 600. |
+| `AUTO_PLAN_MAX_DESIRED_COURSES` / `AUTO_PLAN_MAX_SELECTED_COURSES` | Bounds requested and selected course counts, defaults 20 / 12. |
+| `AUTO_PLAN_MAX_CANDIDATE_BUNDLES` | Candidate bundle cap, default 600. |
+| `AUTO_PLAN_MAX_CANDIDATE_OCCURRENCES` | Expanded occurrence cap, default 50000. |
+| `AUTO_PLAN_MAX_CONFLICT_EDGES` | Solver conflict-edge cap, default 100000. |
+| `AUTO_PLAN_MAX_HORIZON_DAYS` | Scheduling horizon cap, default 240 days. |
+| `AUTO_PLAN_MAX_REQUEST_BYTES` / `AUTO_PLAN_MAX_OPTION_TOKEN_BYTES` | Input and signed-token byte caps, defaults 32768 / 131072. |
+| `AUTO_PLAN_SOLVER_TIMEOUT_MS` / `AUTO_PLAN_SOLVER_CONCURRENCY` | Solver timeout and process concurrency, defaults 8000 ms / 2. |
 | `RECURRENCE_MAX_SPAN_DAYS` | Longest accepted weekly rule, default 1461. |
 | `IDEMPOTENCY_RETENTION_SECONDS` | Replay window for keyed event creates, default 86400. |
 | `CALENDAR_MAX_WINDOW_DAYS` | Largest calendar query window, default 366 local days. |
@@ -180,6 +189,10 @@ Setting `AUTH_SKIP=true` turns verification off completely. Scoped requests then
 ## API docs
 
 Swagger UI is at http://localhost:3000/documentation, Scalar at http://localhost:3000/reference.
+
+The complete route matrix, architecture, Docker topology, worker lifecycle,
+retention policy, academic import procedure, solver limits, and privacy rules
+are in [docs/architecture-and-operations.md](docs/architecture-and-operations.md).
 
 ## Events
 

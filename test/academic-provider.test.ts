@@ -29,6 +29,67 @@ const timestamp = "2026-09-23T10:00:00.000Z";
 const auth = { authorization: "Bearer alice-dev-token" };
 let mongod: MongoMemoryServer;
 
+test("academic worker does not claim when shutdown has started", async () => {
+  let sourceCalls = 0;
+  const worker = new AcademicRefreshWorker(
+    {} as Db,
+    {
+      fetchQuota: async () => {
+        sourceCalls += 1;
+        throw new Error("should not fetch during shutdown");
+      },
+    },
+    {
+      maxAttempts: 3,
+      leaseSeconds: 60,
+      failureCooldownSeconds: 3600,
+      quotaMinIntervalSeconds: 300,
+      shouldStop: () => true,
+    },
+  );
+
+  expect(await worker.runOne()).toBe(false);
+  expect(sourceCalls).toBe(0);
+});
+
+test("academic worker stops between watch scanning and job claiming", async () => {
+  let stopping = false;
+  const collections: string[] = [];
+  const db = {
+    collection(name: string) {
+      collections.push(name);
+      if (name !== "courseWatches")
+        throw new Error(`unexpected collection access: ${name}`);
+      return {
+        find: () => ({
+          toArray: async () => {
+            stopping = true;
+            return [];
+          },
+        }),
+      };
+    },
+  } as unknown as Db;
+  const worker = new AcademicRefreshWorker(
+    db,
+    {
+      fetchQuota: async () => {
+        throw new Error("should not fetch");
+      },
+    },
+    {
+      maxAttempts: 3,
+      leaseSeconds: 60,
+      failureCooldownSeconds: 3600,
+      quotaMinIntervalSeconds: 300,
+      shouldStop: () => stopping,
+    },
+  );
+
+  expect(await worker.runOne()).toBe(false);
+  expect(collections).toEqual(["courseWatches"]);
+});
+
 beforeAll(async () => {
   mongod = await MongoMemoryServer.create();
 });

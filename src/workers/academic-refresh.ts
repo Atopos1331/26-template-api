@@ -21,6 +21,7 @@ export type WorkerSettings = {
   quotaTtlSeconds?: number;
   maxWatchedJobsPerPoll?: number;
   projectionLeaseSeconds?: number;
+  shouldStop?: () => boolean;
   now?: () => Date;
 };
 
@@ -79,8 +80,14 @@ export class AcademicRefreshWorker {
     return this.settings.now?.() ?? new Date();
   }
 
+  private stopping() {
+    return this.settings.shouldStop?.() ?? false;
+  }
+
   async runOne(): Promise<boolean> {
+    if (this.stopping()) return false;
     await this.scanWatchedSections();
+    if (this.stopping()) return false;
     const jobs = this.db.collection("refreshJobs");
     const now = this.now();
     const owner = randomUUID();
@@ -110,7 +117,7 @@ export class AcademicRefreshWorker {
       },
       { sort: { availableAt: 1, _id: 1 }, returnDocument: "after" },
     );
-    if (!job) return this.projectOne();
+    if (!job) return this.stopping() ? false : this.projectOne();
     const leaseKey = `${job.source}:${job.termCode}:quota:${job.targetId}`;
     const providerSlot = `${job.source}:quota-provider`;
     const leases = this.db.collection("refreshLeases");
@@ -364,7 +371,7 @@ export class AcademicRefreshWorker {
           },
         );
       if (leaseHeld) await leases.deleteOne({ leaseKey, ownerId: owner });
-      await this.projectOne();
+      if (!this.stopping()) await this.projectOne();
     }
     return true;
   }

@@ -16,6 +16,7 @@
 services:
   api:
     build: .
+    init: true
     ports:
       - "127.0.0.1:${API_PORT:-3000}:3000"
     environment:
@@ -27,14 +28,36 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   academic-worker:
     build: .
+    init: true
     command: ["bun", "run", "worker:academic-refresh"]
     environment:
       NODE_ENV: development
       MONGO_URI: mongodb://mongodb:27017/template-api
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Hong_Kong}
+      ACADEMIC_CURRENT_TERM_CODE: ${ACADEMIC_CURRENT_TERM_CODE:-}
+      ACADEMIC_QUOTA_TTL_SECONDS: ${ACADEMIC_QUOTA_TTL_SECONDS:-900}
+      ACADEMIC_QUOTA_MIN_INTERVAL_SECONDS: ${ACADEMIC_QUOTA_MIN_INTERVAL_SECONDS:-300}
+      ACADEMIC_QUOTA_MAX_JOBS_PER_POLL: ${ACADEMIC_QUOTA_MAX_JOBS_PER_POLL:-100}
+      REFRESH_FAILURE_COOLDOWN_SECONDS: ${REFRESH_FAILURE_COOLDOWN_SECONDS:-3600}
+      REFRESH_MAX_ATTEMPTS: ${REFRESH_MAX_ATTEMPTS:-3}
+      REFRESH_LEASE_SECONDS: ${REFRESH_LEASE_SECONDS:-60}
+      ACADEMIC_PROVIDER_BASE_URL: ${ACADEMIC_PROVIDER_BASE_URL:-https://w5.ab.ust.hk/wcq/cgi-bin}
     depends_on:
       mongodb:
         condition: service_healthy

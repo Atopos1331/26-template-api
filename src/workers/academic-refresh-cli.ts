@@ -18,6 +18,7 @@ try {
   const provider = new UstQuotaSource({
     baseUrl: options.academicProviderBaseUrl,
   });
+  let stopping = false;
   const worker = new AcademicRefreshWorker(db, provider, {
     maxAttempts: options.refreshMaxAttempts ?? 3,
     leaseSeconds: options.refreshLeaseSeconds ?? 60,
@@ -25,11 +26,11 @@ try {
     quotaMinIntervalSeconds: options.academicQuotaMinIntervalSeconds ?? 300,
     quotaTtlSeconds: options.academicQuotaTtlSeconds ?? 900,
     maxWatchedJobsPerPoll: options.academicQuotaMaxJobsPerPoll ?? 100,
+    shouldStop: () => stopping,
   });
   if (process.argv.includes("--once")) {
     await worker.runOne();
   } else {
-    let stopping = false;
     process.once("SIGINT", () => {
       stopping = true;
     });
