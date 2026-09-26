@@ -158,11 +158,11 @@ export class EventService {
         : this.decodeCursor(cursor, owner, filters);
     const evaluatedAt = after?.evaluatedAt ?? Date.now();
     const visible: Awaited<ReturnType<EventRepository["list"]>> = [];
-    const batchSize = filters.window ? 100 : limit;
+    const batchSize = Math.max(limit, 100);
     let position = after;
     while (visible.length <= limit) {
       const rows = await this.events.list(owner, filters, batchSize, position);
-      const scanned = filters.window ? rows.slice(0, batchSize) : rows;
+      const scanned = rows.slice(0, batchSize);
       const visibleRows = await this.visibleEvents(owner, scanned);
       const visibleIds = new Set(
         visibleRows.map((row) => row._id.toHexString()),

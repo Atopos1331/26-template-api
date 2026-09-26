@@ -21,6 +21,17 @@ coverage/
 # cache
 .cache/
 
+# Browser automation output. playwright-cli drops a timestamped screenshot,
+# page snapshot, and console log into .playwright-cli/ on every command.
+.playwright-cli/
+test-results/
+playwright-report/
+blob-report/
+
+# Local MongoDB data directory, for running a standalone mongod instead of the
+# in-memory fallback.
+.mongo-data/
+
 # Independent academic data tool
 tools/course-data/data/
 tools/course-data/node_modules/

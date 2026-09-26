@@ -5,7 +5,11 @@ import fp from "fastify-plugin";
 import type { Db } from "mongodb";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import App from "../src/app.js";
-import { ACADEMIC_SOURCE, type AcademicError } from "../src/domain/academic.js";
+import {
+  ACADEMIC_SOURCE,
+  type AcademicError,
+  academicIdentity,
+} from "../src/domain/academic.js";
 import {
   FixtureQuotaSource,
   parseUstQuota,
@@ -23,11 +27,25 @@ import { AcademicService } from "../src/services/academic.js";
 import { AcademicRefreshWorker } from "../src/workers/academic-refresh.js";
 
 const termCode = "2530";
-const offeringId = `${ACADEMIC_SOURCE}:${termCode}:COMP2611:UNKNOWN`;
+const offeringId = `${termCode}:COMP2611`;
 const sectionId = `${offeringId}:12345`;
 const timestamp = "2026-09-23T10:00:00.000Z";
 const auth = { authorization: "Bearer alice-dev-token" };
 let mongod: MongoMemoryServer;
+
+test("academic IDs omit the source prefix and resolve source from the API", () => {
+  expect(academicIdentity("2530:COMP2611", "offering")).toEqual({
+    source: ACADEMIC_SOURCE,
+    termCode: "2530",
+  });
+  expect(academicIdentity("2530:COMP2611:12345", "section")).toEqual({
+    source: ACADEMIC_SOURCE,
+    termCode: "2530",
+  });
+  expect(() =>
+    academicIdentity("ust-class-schedule:2530:COMP2611", "offering"),
+  ).toThrow("Invalid academic ID");
+});
 
 test("academic worker does not claim when shutdown has started", async () => {
   let sourceCalls = 0;
@@ -169,14 +187,12 @@ async function seed(db: Db) {
         ...key,
         offeringId,
         courseId: "COMP2611",
-        academicCareer: "UNKNOWN",
         sourceCourseId: "COMP2611",
       },
       {
         ...key,
-        offeringId: `${ACADEMIC_SOURCE}:${termCode}:COMP2612:UNKNOWN`,
+        offeringId: `${termCode}:COMP2612`,
         courseId: "COMP2612",
-        academicCareer: "UNKNOWN",
         sourceCourseId: "COMP2612",
       },
     ]);
@@ -192,7 +208,6 @@ async function seed(db: Db) {
       instructors: [],
       meetings: [],
       consentRequired: null,
-      open: null,
       remarks: null,
     });
     await db.collection("sectionBundles").insertOne({
@@ -219,7 +234,6 @@ function observation(observedAt: string, remaining = 20): QuotaObservation {
     remaining,
     waitlisted: 0,
     reserveCapacity: null,
-    open: null,
     observedAt,
   };
 }
@@ -480,35 +494,36 @@ test("course cursor keeps offerings of the same course in order", async () => {
   try {
     const db = app.mongo.db!;
     await seed(db);
-    await db.collection("courseOfferings").insertOne({
-      source: ACADEMIC_SOURCE,
-      termCode,
-      importBatchId: "active",
-      retiredAt: null,
-      lastSuccessfulImportAt: timestamp,
-      offeringId: `${ACADEMIC_SOURCE}:${termCode}:COMP2611:UG`,
-      courseId: "COMP2611",
-      academicCareer: "UG",
-    });
-    const api = service(db, () => new Date("2026-09-23T10:01:00.000Z"));
+    let now = new Date("2026-09-23T10:01:00.000Z");
+    const api = service(db, () => now);
     const first = await api.listCourses(termCode, {
       limit: 1,
-      search: "computer",
     });
-    expect(first.items.map((row) => row.academicCareer)).toEqual(["UG"]);
+    expect(first.items.map((row) => row.offeringId)).toEqual([offeringId]);
     const second = await api.listCourses(termCode, {
       limit: 1,
-      search: "computer",
       cursor: first.page.nextCursor!,
     });
-    expect(second.items.map((row) => row.academicCareer)).toEqual(["UNKNOWN"]);
+    expect(second.items.map((row) => row.offeringId)).toEqual([
+      `${termCode}:COMP2612`,
+    ]);
     expect(second.page.hasMore).toBe(false);
+    await expect(
+      api.listCourses(termCode, { limit: 1, cursor: "a".repeat(2049) }),
+    ).rejects.toMatchObject({ code: "invalid_cursor" });
+    now = new Date(now.getTime() + 900_000);
+    await expect(
+      api.listCourses(termCode, {
+        limit: 1,
+        cursor: first.page.nextCursor!,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_cursor" });
   } finally {
     await app.close();
   }
 });
 
-test("historical and future terms with active batches remain selectable regardless of freshness", async () => {
+test("only the four newest active terms remain selectable regardless of freshness", async () => {
   const app = await buildApp();
   try {
     const db = app.mongo.db!;
@@ -525,10 +540,26 @@ test("historical and future terms with active batches remain selectable regardle
     await db.collection("academicTerms").insertMany([
       {
         source: ACADEMIC_SOURCE,
+        termCode: "2810",
+        activeImportBatchId: "newest-active",
+        displayName: "2028-29 Fall",
+        sortKey: 202810,
+        lastSuccessfulImportAt: timestamp,
+      },
+      {
+        source: ACADEMIC_SOURCE,
         termCode: "2610",
         activeImportBatchId: "fall-active",
         displayName: "2026-27 Fall",
         sortKey: 202610,
+        lastSuccessfulImportAt: timestamp,
+      },
+      {
+        source: ACADEMIC_SOURCE,
+        termCode: "2710",
+        activeImportBatchId: "middle-active",
+        displayName: "2027-28 Fall",
+        sortKey: 202710,
         lastSuccessfulImportAt: timestamp,
       },
       {
@@ -545,26 +576,29 @@ test("historical and future terms with active batches remain selectable regardle
     expect(terms.items.every((row) => !row.isCurrent && row.isSelectable)).toBe(
       true,
     );
-    expect(
-      terms.items.find((row) => row.termCode === termCode)?.freshness?.isStale,
-    ).toBe(false);
-    expect((await api.getOffering(offeringId)).data.term.isSelectable).toBe(
-      true,
-    );
+    expect(terms.items).toHaveLength(4);
+    expect(terms.items.some((row) => row.termCode === termCode)).toBe(false);
+    await expect(api.getOffering(offeringId)).rejects.toMatchObject({
+      code: "term_not_selectable",
+    });
     const configured = new AcademicService(db, {
       structureTtlSeconds: 86400,
       quotaTtlSeconds: 900,
       cursorKey: "test-signing-key-with-at-least-32-bytes",
       cursorTtlSeconds: 900,
-      currentTermCode: "2610",
+      currentTermCode: termCode,
       now: () => new Date("2026-09-23T10:01:00.000Z"),
     });
     const ordered = await configured.listTerms(10);
-    expect(ordered.items[0]?.termCode).toBe("2610");
-    expect(ordered.items[0]?.isCurrent).toBe(true);
-    expect(
-      ordered.items.slice(1).every((row) => row.isSelectable && !row.isCurrent),
-    ).toBe(true);
+    expect(ordered.items.map((row) => row.termCode)).toEqual([
+      "2810",
+      "2730",
+      "2710",
+      "2610",
+    ]);
+    expect(ordered.items).toHaveLength(4);
+    expect(ordered.items.every((row) => !row.isCurrent)).toBe(true);
+    expect(ordered.items.every((row) => row.isSelectable)).toBe(true);
     await db.collection("academicTerms").updateOne(
       { source: ACADEMIC_SOURCE, termCode },
       {
@@ -574,9 +608,9 @@ test("historical and future terms with active batches remain selectable regardle
         },
       },
     );
-    expect((await api.getOffering(offeringId)).data.term.isSelectable).toBe(
-      true,
-    );
+    await expect(api.getOffering(offeringId)).rejects.toMatchObject({
+      code: "term_not_selectable",
+    });
   } finally {
     await app.close();
   }
@@ -716,7 +750,6 @@ test("watched-section scan expands courses, skips retired sections, and coalesce
       enrolled: 120,
       remaining: 0,
       waitlisted: 0,
-      open: true,
       observedAt: timestamp,
       nextRefreshAt: timestamp,
     });

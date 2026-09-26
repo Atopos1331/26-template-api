@@ -1,6 +1,7 @@
 import type { Collection, Db, Document } from "mongodb";
 import { ACADEMIC_SOURCE } from "../domain/academic.js";
 import { PlanError } from "../domain/plans.js";
+import { selectableTerms } from "./selectable-terms.js";
 
 export type CanonicalBundle = {
   termCode: string;
@@ -48,6 +49,14 @@ export class CourseCatalogRepository {
         409,
         "Academic term has no active course data",
       );
+    if (
+      !(await selectableTerms(this.db)).some((row) => row.termCode === termCode)
+    )
+      throw new PlanError(
+        "term_not_selectable",
+        409,
+        "Only the four most recent terms are selectable",
+      );
     return term as unknown as ActiveTerm;
   }
 
@@ -60,22 +69,10 @@ export class CourseCatalogRepository {
   }
 
   async defaultActiveTerm(preferredTermCode?: string) {
-    if (preferredTermCode) {
-      const preferred = await this.terms.findOne({
-        source: ACADEMIC_SOURCE,
-        termCode: preferredTermCode,
-        activeImportBatchId: { $type: "string" },
-      });
-      if (preferred) return preferred as unknown as ActiveTerm;
-    }
-    const term = await this.terms.findOne(
-      {
-        source: ACADEMIC_SOURCE,
-        activeImportBatchId: { $type: "string" },
-      },
-      { sort: { sortKey: -1, termCode: 1 } },
-    );
-    return (term as unknown as ActiveTerm | null) ?? null;
+    const terms = await selectableTerms(this.db);
+    return (terms.find((term) => term.termCode === preferredTermCode) ??
+      terms[0] ??
+      null) as ActiveTerm | null;
   }
 
   private key(term: ActiveTerm) {
@@ -160,24 +157,19 @@ export class CourseCatalogRepository {
     return { termCode, importBatchId, course, offering, bundle, sections };
   }
 
-  async findOfferings(term: ActiveTerm, courseId: string, career?: string) {
+  async findOfferings(term: ActiveTerm, courseId: string) {
     const key = this.key(term);
     const offerings = await this.offerings
       .find({
         ...key,
         courseId,
-        ...(career === undefined ? {} : { academicCareer: career }),
       })
-      .sort({ academicCareer: 1, offeringId: 1 })
+      .sort({ offeringId: 1 })
       .toArray();
     return offerings;
   }
 
-  async findOfferingsByCode(
-    term: ActiveTerm,
-    courseCode: string,
-    career?: string,
-  ) {
+  async findOfferingsByCode(term: ActiveTerm, courseCode: string) {
     const courses = await this.courses
       .find({
         ...this.key(term),
@@ -185,16 +177,31 @@ export class CourseCatalogRepository {
       })
       .sort({ courseId: 1 })
       .toArray();
-    const result: Array<{ course: Document; offering: Document }> = [];
-    for (const course of courses) {
-      const offerings = await this.findOfferings(
-        term,
-        String(course.courseId),
-        career,
-      );
-      result.push(...offerings.map((offering) => ({ course, offering })));
+    return this.offeringsForCourses(term, courses);
+  }
+
+  private async offeringsForCourses(term: ActiveTerm, courses: Document[]) {
+    if (!courses.length) return [];
+    const offerings = await this.offerings
+      .find({
+        ...this.key(term),
+        courseId: { $in: courses.map((course) => String(course.courseId)) },
+      })
+      .sort({ offeringId: 1 })
+      .toArray();
+    const byCourse = new Map<string, Document[]>();
+    for (const offering of offerings) {
+      const id = String(offering.courseId);
+      const rows = byCourse.get(id) ?? [];
+      rows.push(offering);
+      byCourse.set(id, rows);
     }
-    return result;
+    return courses.flatMap((course) =>
+      (byCourse.get(String(course.courseId)) ?? []).map((offering) => ({
+        course,
+        offering,
+      })),
+    );
   }
 
   async courseCodeExists(courseCode: string) {
@@ -210,6 +217,50 @@ export class CourseCatalogRepository {
       .find({ ...key, offeringId })
       .sort({ bundleId: 1 })
       .toArray();
+  }
+
+  async resolveBundles(
+    term: ActiveTerm,
+    course: Document,
+    offering: Document,
+    bundles: Document[],
+  ): Promise<CanonicalBundle[]> {
+    if (!bundles.length) return [];
+    const offeringId = String(offering.offeringId);
+    const classNbrs = [
+      ...new Set(bundles.flatMap((bundle) => bundle.componentClassNbrs ?? [])),
+    ];
+    const sections = await this.sections
+      .find({
+        ...this.key(term),
+        offeringId,
+        classNbr: { $in: classNbrs },
+      })
+      .toArray();
+    return bundles.map((bundle) => {
+      const componentClassNbrs = bundle.componentClassNbrs ?? [];
+      const components = sections.filter((section) =>
+        componentClassNbrs.includes(section.classNbr),
+      );
+      if (
+        String(bundle.offeringId) !== offeringId ||
+        String(offering.courseId) !== String(course.courseId) ||
+        components.length !== componentClassNbrs.length
+      )
+        throw new PlanError(
+          "stale_reference",
+          409,
+          "Course section bundle is incomplete",
+        );
+      return {
+        termCode: term.termCode,
+        importBatchId: term.activeImportBatchId,
+        course,
+        offering,
+        bundle,
+        sections: components,
+      };
+    });
   }
 
   async courseForOffering(term: ActiveTerm, offering: Document) {
@@ -262,7 +313,6 @@ export class CourseCatalogRepository {
       courseCodes: string[];
       subjects: string[];
       levels: number[];
-      academicCareer?: string;
     },
   ) {
     const key = this.key(term);
@@ -296,16 +346,7 @@ export class CourseCatalogRepository {
       const match = String(course.catalogNumber ?? "").match(/^[1-9]/);
       return match ? input.levels.includes(Number(match[0])) : false;
     });
-    const result: Array<{ course: Document; offering: Document }> = [];
-    for (const course of filtered) {
-      const offerings = await this.findOfferings(
-        term,
-        String(course.courseId),
-        input.academicCareer,
-      );
-      result.push(...offerings.map((offering) => ({ course, offering })));
-    }
-    return result;
+    return this.offeringsForCourses(term, filtered);
   }
 
   async activeBundleById(term: ActiveTerm, bundleId: string) {

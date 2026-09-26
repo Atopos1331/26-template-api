@@ -334,6 +334,10 @@ export function detectConflicts(
   items: CalendarOccurrence[],
   timezone: string,
   maxConflicts: number,
+  includePair?: (
+    first: CalendarOccurrence,
+    second: CalendarOccurrence,
+  ) => boolean,
 ) {
   const blocking: CalendarConflict[] = [];
   const informational: CalendarConflict[] = [];
@@ -341,6 +345,7 @@ export function detectConflicts(
     for (let j = i + 1; j < items.length; j++) {
       const first = items[i]!;
       const second = items[j]!;
+      if (includePair && !includePair(first, second)) continue;
       let conflict: CalendarConflict | undefined;
       const keys = [first.calendarKey, second.calendarKey].sort();
       if (first.allDay || second.allDay) {

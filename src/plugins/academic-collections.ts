@@ -51,7 +51,7 @@ export type WatchNotificationDocument = Document & {
   termCode: string;
   targetType: "course" | "section";
   targetId: string;
-  changeType: "opened" | "closed" | "seats_available";
+  changeType: "seats_available";
   beforeState: Record<string, unknown>;
   afterState: Record<string, unknown>;
   observedAt: string;

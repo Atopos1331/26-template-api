@@ -24,6 +24,7 @@ import {
   enqueueQuotaRefreshJob,
   quotaSnapshots,
 } from "../repositories/quotas.js";
+import { selectableTerms } from "../repositories/selectable-terms.js";
 
 type Freshness = {
   asOf: string | null;
@@ -76,7 +77,6 @@ const offeringFields = [
   "offeringId",
   "termCode",
   "courseId",
-  "academicCareer",
   "source",
   "sourceCourseId",
 ];
@@ -106,7 +106,6 @@ const sectionFields = [
   "instructors",
   "meetings",
   "consentRequired",
-  "open",
   "remarks",
 ];
 const bundleFields = [
@@ -129,7 +128,6 @@ const quotaFields = [
   "remaining",
   "waitlisted",
   "reserveCapacity",
-  "open",
   "observedAt",
 ];
 
@@ -225,6 +223,8 @@ export class AcademicService {
     filters: string,
   ): string | null {
     if (!token) return null;
+    if (token.length > 2048 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token))
+      throw new AcademicError("invalid_cursor", 400, "Invalid cursor");
     const [encoded, signature, extra] = token.split(".");
     if (!encoded || !signature || extra)
       throw new AcademicError("invalid_cursor", 400, "Invalid cursor");
@@ -233,6 +233,7 @@ export class AcademicService {
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
       throw new AcademicError("invalid_cursor", 400, "Invalid cursor");
     try {
+      const now = this.now().getTime();
       const value = JSON.parse(
         Buffer.from(encoded, "base64url").toString(),
       ) as Cursor;
@@ -241,10 +242,9 @@ export class AcademicService {
         value.scope !== scope ||
         value.filters !== filters ||
         typeof value.last !== "string" ||
-        !Number.isFinite(value.issuedAt) ||
-        value.issuedAt > this.now().getTime() ||
-        value.issuedAt + this.settings.cursorTtlSeconds * 1000 <
-          this.now().getTime()
+        !Number.isSafeInteger(value.issuedAt) ||
+        value.issuedAt > now ||
+        value.issuedAt + this.settings.cursorTtlSeconds * 1000 <= now
       )
         throw new Error("cursor mismatch");
       return value.last;
@@ -294,6 +294,14 @@ export class AcademicService {
         503,
         "Academic data is not available",
       );
+    if (
+      !(await selectableTerms(this.db)).some((row) => row.termCode === termCode)
+    )
+      throw new AcademicError(
+        "term_not_selectable",
+        409,
+        "Only the four most recent terms are selectable",
+      );
     return term;
   }
 
@@ -301,33 +309,20 @@ export class AcademicService {
     limit: number,
     cursor?: string,
   ): Promise<Page<Static<typeof TermSchema>>> {
-    const terms = await this.db
-      .collection("academicTerms")
-      .find({
-        source: ACADEMIC_SOURCE,
-        activeImportBatchId: { $type: "string" },
-      })
-      .toArray();
+    const terms = await selectableTerms(this.db);
     if (!terms.length)
       throw new AcademicError(
         "provider_unavailable",
         503,
         "Academic data is not available",
       );
-    terms.sort(
-      (a, b) =>
-        Number(b.termCode === this.settings.currentTermCode) -
-          Number(a.termCode === this.settings.currentTermCode) ||
-        Number(b.sortKey ?? 0) - Number(a.sortKey ?? 0) ||
-        String(a.termCode).localeCompare(String(b.termCode)),
-    );
     const last = this.readCursor(cursor, "terms", "all", "");
     const start = last
       ? terms.findIndex((item) => item.termCode === last) + 1
       : 0;
     if (last && start === 0)
       throw new AcademicError("invalid_cursor", 400, "Invalid cursor");
-    const selected = terms.slice(start, start + limit + 1);
+    const selected = terms.slice(start, start + Math.min(limit + 1, 4));
     const items = selected.map((term) => ({
       ...clean<Static<typeof TermSchema>>(term, termFields),
       isCurrent: term.termCode === this.settings.currentTermCode,
@@ -411,19 +406,14 @@ export class AcademicService {
     );
     if (last) {
       const parts = last.split("\0");
-      if (parts.length !== 3)
+      if (parts.length !== 2)
         throw new AcademicError("invalid_cursor", 400, "Invalid cursor");
-      const [code, career, id] = parts;
+      const [code, id] = parts;
       pipeline.push({
         $match: {
           $or: [
             { courseCode: { $gt: code } },
-            { courseCode: code, "offering.academicCareer": { $gt: career } },
-            {
-              courseCode: code,
-              "offering.academicCareer": career,
-              "offering.offeringId": { $gt: id },
-            },
+            { courseCode: code, "offering.offeringId": { $gt: id } },
           ],
         },
       });
@@ -432,7 +422,6 @@ export class AcademicService {
       {
         $sort: {
           courseCode: 1,
-          "offering.academicCareer": 1,
           "offering.offeringId": 1,
         },
       },
@@ -463,14 +452,13 @@ export class AcademicService {
       group.push(row);
       sectionsByOffering.set(row.offeringId, group);
     }
-    const items = selected.map((course) => ({
+    const items = visible.map((course) => ({
       offeringId: course.offering.offeringId,
       termCode,
       courseId: course.courseId,
       courseCode: course.courseCode,
       title: course.title,
       credits: course.credits ?? null,
-      academicCareer: course.offering.academicCareer,
       sectionCount:
         sectionsByOffering.get(course.offering.offeringId)?.length ?? 0,
       latestUpdatedAt: course.offering.updatedAt ?? course.updatedAt ?? null,
@@ -484,29 +472,35 @@ export class AcademicService {
       ),
     }));
     const lastRow = visible.at(-1);
-    return this.page(
+    const hasMore = selected.length > query.limit;
+    return {
       items,
-      query.limit,
-      lastRow
-        ? this.cursor(
-            "courses",
-            termCode,
-            filters,
-            `${lastRow.courseCode}\0${lastRow.offering.academicCareer}\0${lastRow.offering.offeringId}`,
-          )
-        : null,
-      this.aggregateFreshness(
-        [
-          term,
-          ...visible.flatMap((course) => [
-            course.offering,
-            course,
-            ...(sectionsByOffering.get(course.offering.offeringId) ?? []),
-          ]),
-        ],
-        this.settings.structureTtlSeconds,
-      ),
-    );
+      page: {
+        nextCursor:
+          hasMore && lastRow
+            ? this.cursor(
+                "courses",
+                termCode,
+                filters,
+                `${lastRow.courseCode}\0${lastRow.offering.offeringId}`,
+              )
+            : null,
+        hasMore,
+      },
+      meta: {
+        freshness: this.aggregateFreshness(
+          [
+            term,
+            ...visible.flatMap((course) => [
+              course.offering,
+              course,
+              ...(sectionsByOffering.get(course.offering.offeringId) ?? []),
+            ]),
+          ],
+          this.settings.structureTtlSeconds,
+        ),
+      },
+    };
   }
 
   private async activeOffering(offeringId: string): Promise<{

@@ -48,7 +48,6 @@ export type Offering = {
   offeringId: string;
   termCode: string;
   courseId: string;
-  academicCareer: string;
   source: string;
   sourceCourseId: string;
   sourceRecordId: string;
@@ -64,7 +63,6 @@ export type Section = {
   instructors: string[];
   meetings: Meeting[];
   consentRequired: boolean | null;
-  open: boolean | null;
   remarks: string | null;
   source: string;
   sourceRecordId: string;
@@ -89,7 +87,6 @@ export type Quota = {
   remaining: number | null;
   waitlisted: number | null;
   reserveCapacity: number | null;
-  open: boolean | null;
   observedAt: string;
   source: string;
 };
@@ -189,9 +186,7 @@ export function validate(input: unknown): asserts input is CourseData {
       row.source !== data.source ||
       !courses.has(row.courseId) ||
       row.offeringId !==
-        [row.source, row.termCode, row.courseId, row.academicCareer]
-          .map(encodeURIComponent)
-          .join(":")
+        [row.termCode, row.courseId].map(encodeURIComponent).join(":")
     )
       throw new Error("OFFERING_REFERENCE_INVALID");
   }

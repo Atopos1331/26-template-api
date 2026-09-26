@@ -8,6 +8,7 @@ import App from "../src/app.js";
 import { EventError } from "../src/domain/events.js";
 import { parseIcs } from "../src/domain/ics.js";
 import { expandIcsSeries } from "../src/domain/ics-calendar.js";
+import { EventRepository } from "../src/repositories/events.js";
 
 const alice = { authorization: "Bearer alice-dev-token" };
 const bob = { authorization: "Bearer bob-dev-token" };
@@ -434,6 +435,48 @@ test("ICS imports replace complete effective UIDs, restore older versions, and e
   });
   assert.equal(restored.json().items.length, 1);
   assert.equal(restored.json().items[0].title, "Original");
+});
+
+test("a newer ICS import replaces only its overlapping UIDs", async () => {
+  const app = await buildApp();
+  const post = (events: string) =>
+    app.inject({
+      method: "POST",
+      url: "/events/import/ics?from=2026-09-24&to=2026-09-27",
+      headers: { ...alice, "content-type": "text/calendar" },
+      payload: calendar(events),
+    });
+  const original = await post(
+    [
+      single("shared", "Old version", "20260925T100000Z", "20260925T110000Z"),
+      single("retained", "Retained", "20260925T120000Z", "20260925T130000Z"),
+    ].join("\r\n"),
+  );
+  assert.equal(original.statusCode, 201, original.payload);
+  const updated = await post(
+    single("shared", "New version", "20260925T140000Z", "20260925T150000Z"),
+  );
+  assert.equal(updated.statusCode, 201, updated.payload);
+
+  const events = await app.inject({
+    url: "/events?source=ics&from=2026-09-25&to=2026-09-26",
+    headers: alice,
+  });
+  assert.equal(events.statusCode, 200);
+  assert.deepEqual(
+    events.json().items.map((item: { title: string }) => item.title),
+    ["Retained", "New version"],
+  );
+  const repository = new EventRepository(
+    app.collections.events,
+    app.collections.eventImports,
+  );
+  assert.deepEqual(
+    (await repository.activeImportedEvents("alice"))
+      .map((event) => event.title)
+      .sort(),
+    ["New version", "Retained"],
+  );
 });
 
 test("deleting a processing ICS manifest returns conflict without changing it", async () => {

@@ -37,15 +37,15 @@ describe("course plan request validation", () => {
   test("normalizes an item reference but never accepts snapshots", () => {
     expect(
       normalizeItemCreate({
-        offeringId: "ust-class-schedule:2530:COMP2611:UNKNOWN",
-        bundleId: "ust-class-schedule:2530:COMP2611:UNKNOWN:12345",
+        offeringId: "2530:COMP2611",
+        bundleId: "2530:COMP2611:12345",
         status: "alternative",
         note: "  Try this section  ",
         colorOverride: "#123456",
       }),
     ).toEqual({
-      offeringId: "ust-class-schedule:2530:COMP2611:UNKNOWN",
-      bundleId: "ust-class-schedule:2530:COMP2611:UNKNOWN:12345",
+      offeringId: "2530:COMP2611",
+      bundleId: "2530:COMP2611:12345",
       status: "alternative",
       note: "Try this section",
       colorOverride: "#123456",

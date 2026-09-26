@@ -130,7 +130,6 @@
         "offeringId",
         "termCode",
         "courseId",
-        "academicCareer",
         "source",
         "sourceCourseId",
         "sourceRecordId"
@@ -139,7 +138,6 @@
         "offeringId": { "type": "string" },
         "termCode": { "type": "string" },
         "courseId": { "type": "string" },
-        "academicCareer": { "type": "string" },
         "source": { "type": "string" },
         "sourceCourseId": { "type": "string" },
         "sourceRecordId": { "type": "string" }
@@ -197,7 +195,6 @@
         "instructors",
         "meetings",
         "consentRequired",
-        "open",
         "remarks",
         "source",
         "sourceRecordId"
@@ -213,7 +210,6 @@
         "instructors": { "type": "array", "items": { "type": "string" } },
         "meetings": { "type": "array", "items": { "$ref": "#/$defs/meeting" } },
         "consentRequired": { "type": ["boolean", "null"] },
-        "open": { "type": ["boolean", "null"] },
         "remarks": { "$ref": "#/$defs/nullableString" },
         "source": { "type": "string" },
         "sourceRecordId": { "type": "string" }
@@ -270,7 +266,6 @@
         "remaining",
         "waitlisted",
         "reserveCapacity",
-        "open",
         "observedAt",
         "source"
       ],
@@ -282,7 +277,6 @@
         "remaining": { "type": ["integer", "null"] },
         "waitlisted": { "type": ["integer", "null"], "minimum": 0 },
         "reserveCapacity": { "type": ["integer", "null"], "minimum": 0 },
-        "open": { "type": ["boolean", "null"] },
         "observedAt": { "$ref": "#/$defs/timestamp" },
         "source": { "type": "string" }
       }

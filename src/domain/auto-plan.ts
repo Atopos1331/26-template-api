@@ -16,7 +16,6 @@ export type AutoPlanWeights = {
 };
 export type AutoPlanFill = {
   maxCourses: number;
-  academicCareer?: string;
   courseCodes: string[];
   subjects: string[];
   levels: number[];
@@ -38,7 +37,6 @@ export type AutoPlanWindow = {
 
 export type AutoPlanCourseInput = {
   courseCode: string;
-  academicCareer?: string;
   required: boolean;
   priority: number;
   lockedBundleId?: string;
@@ -403,7 +401,6 @@ export function normalizeAutoPlanRequest(
       if (
         ![
           "maxCourses",
-          "academicCareer",
           "courseCodes",
           "subjects",
           "levels",
@@ -469,10 +466,6 @@ export function normalizeAutoPlanRequest(
       minCredits > maxCredits
     )
       invalid("fill", "minCredits must not exceed maxCredits");
-    const academicCareer =
-      row.academicCareer === undefined
-        ? undefined
-        : text(row.academicCareer, "fill.academicCareer", 32).toUpperCase();
     const commonCoreCategoryIds =
       row.commonCoreCategoryIds === undefined
         ? []
@@ -512,7 +505,6 @@ export function normalizeAutoPlanRequest(
       );
     fill = {
       maxCourses,
-      ...(academicCareer === undefined ? {} : { academicCareer }),
       courseCodes,
       subjects,
       levels,
@@ -530,7 +522,6 @@ export function normalizeAutoPlanRequest(
       const row = object(entry, `courses[${index}]`);
       const allowed = new Set([
         "courseCode",
-        "academicCareer",
         "required",
         "priority",
         "lockedBundleId",
@@ -545,14 +536,6 @@ export function normalizeAutoPlanRequest(
         row.courseCode,
         `courses[${index}].courseCode`,
       );
-      const career =
-        row.academicCareer === undefined
-          ? undefined
-          : text(
-              row.academicCareer,
-              `courses[${index}].academicCareer`,
-              32,
-            ).toUpperCase();
       const required = row.required === undefined ? false : row.required;
       if (typeof required !== "boolean")
         invalid(`courses[${index}].required`, "must be boolean");
@@ -585,7 +568,6 @@ export function normalizeAutoPlanRequest(
         );
       return {
         courseCode: code,
-        ...(career === undefined ? {} : { academicCareer: career }),
         required,
         priority,
         ...(lockedBundleId === undefined ? {} : { lockedBundleId }),

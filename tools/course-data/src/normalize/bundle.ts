@@ -9,6 +9,65 @@ export type VerifiedBindings = {
   }>;
 };
 
+type LabelBinding = {
+  sections: Section[];
+  source: "derived-label";
+};
+
+type ParsedLabel = { group: string; variant: string };
+
+function parseLabel(section: Section): ParsedLabel | null {
+  const match = /^[A-Z]+([0-9]+)([A-Z]?)$/i.exec(section.sectionCode.trim());
+  if (!match) return null;
+  const number = Number(match[1]);
+  if (!Number.isSafeInteger(number)) return null;
+  return { group: String(number), variant: (match[2] ?? "").toUpperCase() };
+}
+
+/**
+ * The public schedule omits associatedClass, but many offerings use matching
+ * labels such as L1/LA1/T1. Infer only exact, auditable label groups; any
+ * ambiguous shape remains unavailable until an operator verifies it.
+ */
+function inferLabelBinding(sections: Section[]): LabelBinding | null {
+  if (sections.some((section) => section.associatedClass !== null)) return null;
+  const byType = new Map<
+    string,
+    Map<string, Array<ParsedLabel & { section: Section }>>
+  >();
+  for (const section of sections) {
+    const label = parseLabel(section);
+    if (!label) return null;
+    const entries = byType.get(section.componentType) ?? new Map();
+    const group = entries.get(label.group) ?? [];
+    group.push({ ...label, section });
+    entries.set(label.group, group);
+    byType.set(section.componentType, entries);
+  }
+  const groupsByType = [...byType.entries()];
+  if (groupsByType.length < 2) return null;
+  const groupKeys = [...groupsByType[0]![1].keys()].sort();
+  if (!groupKeys.length) return null;
+  for (const [componentType, entries] of groupsByType) {
+    const keys = [...entries.keys()].sort();
+    if (keys.join("\u0000") !== groupKeys.join("\u0000")) return null;
+    for (const labels of entries.values()) {
+      if (labels.length < 2) continue;
+      if (
+        componentType === "LEC" ||
+        labels.some((label) => !label.variant) ||
+        new Set(labels.map((label) => label.variant)).size !== labels.length
+      )
+        return null;
+    }
+  }
+  const bound = sections.map((section) => ({
+    ...section,
+    associatedClass: parseLabel(section)!.group,
+  }));
+  return { sections: bound, source: "derived-label" };
+}
+
 function overlaps(a: Meeting, b: Meeting): boolean {
   if (a.endDate && b.startDate && a.endDate < b.startDate) return false;
   if (b.endDate && a.startDate && b.endDate < a.startDate) return false;
@@ -25,17 +84,23 @@ export function makeBundles(sections: Section[]): {
 } {
   if (!sections.length) return { bundles: [], warnings: [] };
   const offeringId = sections[0]?.offeringId ?? "";
-  const types = [...new Set(sections.map((row) => row.componentType))];
+  const inferred =
+    new Set(sections.map((row) => row.componentType)).size > 1 &&
+    sections.some((row) => !row.associatedClass)
+      ? inferLabelBinding(sections)
+      : null;
+  const boundSections = inferred?.sections ?? sections;
+  const types = [...new Set(boundSections.map((row) => row.componentType))];
   const warnings: string[] = [];
-  if (types.length > 1 && sections.some((row) => !row.associatedClass)) {
+  if (types.length > 1 && boundSections.some((row) => !row.associatedClass)) {
     return { bundles: [], warnings: [`AMBIGUOUS_BINDING:${offeringId}`] };
   }
   const groups =
     types.length === 1
-      ? [sections]
-      : [...new Set(sections.map((row) => row.associatedClass))].map(
+      ? [boundSections]
+      : [...new Set(boundSections.map((row) => row.associatedClass))].map(
           (binding) =>
-            sections.filter((row) => row.associatedClass === binding),
+            boundSections.filter((row) => row.associatedClass === binding),
         );
   const bundles: Bundle[] = [];
   for (const group of groups) {
@@ -88,10 +153,11 @@ export function makeBundles(sections: Section[]): {
         bindingGroup:
           types.length === 1 ? null : (parts[0]?.associatedClass ?? null),
         derivedSchedule: { meetings },
-        source: "derived",
+        source: inferred?.source ?? "derived",
       });
     }
   }
+  if (inferred) warnings.push(`INFERRED_LABEL_BINDING:${offeringId}`);
   return { bundles, warnings };
 }
 

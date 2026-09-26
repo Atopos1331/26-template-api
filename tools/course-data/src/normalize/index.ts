@@ -149,17 +149,12 @@ export function normalize(
       });
       seenCourses.add(courseId);
     }
-    // The public schedule has no explicit career on course rows. Keep it unknown.
-    const career = row.academicCareer ?? "UNKNOWN";
-    const offeringId = [raw.source, raw.termCode, courseId, career]
-      .map(safe)
-      .join(":");
+    const offeringId = [raw.termCode, courseId].map(safe).join(":");
     if (!seenOfferings.has(offeringId)) {
       offerings.push({
         offeringId,
         termCode: raw.termCode,
         courseId,
-        academicCareer: career,
         source: raw.source,
         sourceCourseId: row.crseId ?? courseId,
         sourceRecordId: row.crseId ?? courseId,
@@ -205,7 +200,6 @@ export function normalize(
         instructors: [...new Set(item.instructors)],
         meetings,
         consentRequired: item.consent ?? null,
-        open: item.classOpen ?? null,
         remarks: item.remarks ?? null,
         source: raw.source,
         sourceRecordId: classNbr,
@@ -218,8 +212,7 @@ export function normalize(
       if (
         [capacity, enrolled, remaining, waitlisted, reserveCapacity].some(
           (value) => value !== null,
-        ) ||
-        item.classOpen != null
+        )
       ) {
         if (
           remaining !== null &&
@@ -242,7 +235,6 @@ export function normalize(
               : null),
           waitlisted,
           reserveCapacity,
-          open: item.classOpen ?? null,
           observedAt: generatedAt,
           source: raw.source,
         });

@@ -116,26 +116,22 @@ export class EventRepository {
       .find({ ownerUsername, source: "ics", status: "active" })
       .sort({ activatedAt: -1, _id: -1 })
       .toArray();
-    const selected = new Map<string, ObjectId>();
+    const selected = new Map<string, WithId<EventDocument>[]>();
     for (const manifest of manifests) {
       const rows = await this.events
         .find({ ownerUsername, source: "ics", importId: manifest._id })
-        .project<{ externalId?: string }>({ externalId: 1 })
         .toArray();
+      const byUid = new Map<string, WithId<EventDocument>[]>();
       for (const row of rows) {
         const uid = String(row.externalId ?? "");
-        if (!selected.has(uid)) selected.set(uid, manifest._id);
+        const group = byUid.get(uid) ?? [];
+        group.push(row);
+        byUid.set(uid, group);
       }
+      for (const [uid, group] of byUid)
+        if (!selected.has(uid)) selected.set(uid, group);
     }
-    if (!selected.size) return [];
-    return this.events
-      .find({
-        ownerUsername,
-        source: "ics",
-        importId: { $in: [...selected.values()] },
-        externalId: { $in: [...selected.keys()] },
-      })
-      .toArray();
+    return [...selected.values()].flat();
   }
 
   async suppressedKeys(ownerUsername: string) {

@@ -183,7 +183,6 @@ export async function recordQuotaFailure(
                 remaining: null,
                 waitlisted: null,
                 reserveCapacity: null,
-                open: null,
                 observedAt: null,
               },
               $set: patch,

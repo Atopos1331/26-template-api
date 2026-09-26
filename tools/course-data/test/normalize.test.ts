@@ -158,6 +158,99 @@ describe("UST source normalization", () => {
     expect(makeBundles(overlapping).bundles).toHaveLength(0);
   });
 
+  test("infers lecture, lab, and tutorial bindings from aligned labels", () => {
+    const sections = normalize(raw()).sections.map((row, index) => ({
+      ...row,
+      sectionCode: ["L1", "LA1", "T1"][index]!,
+      componentType: ["LEC", "LAB", "TUT"][index]!,
+    }));
+    const result = makeBundles(sections);
+    expect(result.bundles).toHaveLength(1);
+    expect(result.bundles[0]).toMatchObject({
+      sectionLabels: ["L1", "LA1", "T1"],
+      componentClassNbrs: ["12345", "12346", "12347"],
+      bindingGroup: "1",
+      source: "derived-label",
+    });
+    expect(result.warnings).toContain(
+      `INFERRED_LABEL_BINDING:${sections[0]?.offeringId}`,
+    );
+  });
+
+  test("treats lettered tutorials as alternatives within their lecture group", () => {
+    const [lecture, , tutorial] = normalize(raw()).sections;
+    const section = (
+      source: Section,
+      sectionCode: string,
+      componentType: string,
+      classNbr: string,
+    ): Section => ({
+      ...source!,
+      sectionId: `${source!.offeringId}:${classNbr}`,
+      sectionCode,
+      componentType,
+      classNbr,
+      associatedClass: null,
+    });
+    const sections = [
+      section(lecture!, "L01", "LEC", "101"),
+      section(lecture!, "L02", "LEC", "102"),
+      section(tutorial!, "T01A", "TUT", "201"),
+      section(tutorial!, "T01B", "TUT", "202"),
+      section(tutorial!, "T02A", "TUT", "203"),
+    ];
+
+    const result = makeBundles(sections);
+
+    expect(result.bundles.map((bundle) => bundle.sectionLabels)).toEqual([
+      ["L01", "T01A"],
+      ["L01", "T01B"],
+      ["L02", "T02A"],
+    ]);
+    expect(result.bundles.map((bundle) => bundle.bindingGroup)).toEqual([
+      "1",
+      "1",
+      "2",
+    ]);
+  });
+
+  test("derives COMP2012-style lecture and lab groups only for aligned numbers", () => {
+    const [lecture, lab] = normalize(raw()).sections;
+    const section = (
+      source: Section,
+      sectionCode: string,
+      componentType: string,
+      classNbr: string,
+    ): Section => ({
+      ...source!,
+      sectionId: `${source!.offeringId}:${classNbr}`,
+      sectionCode,
+      componentType,
+      classNbr,
+      associatedClass: null,
+    });
+    const aligned = [1, 2, 3].flatMap((group) => [
+      section(lecture!, `L${group}`, "LEC", `1${group}`),
+      section(lab!, `LA${group}`, "LAB", `2${group}`),
+    ]);
+    const result = makeBundles(aligned);
+    expect(result.bundles.map((bundle) => bundle.sectionLabels)).toEqual([
+      ["L1", "LA1"],
+      ["L2", "LA2"],
+      ["L3", "LA3"],
+    ]);
+
+    const mismatched = aligned.map((row) =>
+      row.componentType === "LAB" && row.sectionCode === "LA2"
+        ? { ...row, sectionCode: "LA4" }
+        : row,
+    );
+    expect(makeBundles(mismatched)).toMatchObject({
+      bundles: [],
+      warnings: [`AMBIGUOUS_BINDING:${aligned[0]?.offeringId}`],
+    });
+  });
+
   test("accepts only evidenced exact combinations for unknown bindings", () => {
     const verified = normalize(raw(), {
       termCode: "2530",
@@ -259,28 +352,10 @@ describe("UST source normalization", () => {
     ).toThrow("BINDING_COMBINATION_INVALID");
   });
 
-  test("keeps UG and PG offering identities distinct", () => {
+  test("uses one offering identity per term and course", () => {
     const base = normalize(raw());
-    const course = base.courses[0]!;
-    const ug = {
-      ...base.offerings[0]!,
-      academicCareer: "UG",
-      offeringId: "ust-class-schedule:2530:COMP2611:UG",
-    };
-    const pg = {
-      ...ug,
-      academicCareer: "PG",
-      offeringId: "ust-class-schedule:2530:COMP2611:PG",
-    };
-    validate({
-      ...base,
-      courses: [course],
-      offerings: [ug, pg],
-      sections: [],
-      bundles: [],
-      quotaSnapshots: [],
-    });
-    expect(ug.offeringId).not.toBe(pg.offeringId);
+    expect(base.offerings[0]!.offeringId).toBe("2530:COMP2611");
+    expect("academicCareer" in base.offerings[0]!).toBe(false);
   });
 });
 

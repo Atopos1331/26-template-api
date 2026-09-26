@@ -7,6 +7,7 @@ import type {
   CourseWatchDocument,
   WatchNotificationDocument,
 } from "../plugins/academic-collections.js";
+import { selectableTerms } from "../repositories/selectable-terms.js";
 
 export type WatchPreference = "none" | "in_app";
 
@@ -26,12 +27,13 @@ function requestError(field: string, message: string): never {
 function encodeCursor(
   key: string,
   owner: string,
+  scope: string,
   createdAt: string,
   id: string,
   issuedAt: number,
 ) {
   const encoded = Buffer.from(
-    JSON.stringify({ owner, createdAt, id, issuedAt }),
+    JSON.stringify({ owner, scope, createdAt, id, issuedAt }),
   ).toString("base64url");
   return `${encoded}.${createHmac("sha256", key).update(encoded).digest("base64url")}`;
 }
@@ -40,9 +42,12 @@ function decodeCursor(
   key: string,
   token: string,
   owner: string,
+  scope: string,
   ttlSeconds: number,
   now: number,
 ) {
+  if (token.length > 2048 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token))
+    throw new PlanError("invalid_cursor", 400, "Invalid cursor");
   const [encoded, signature, extra] = token.split(".");
   if (!encoded || !signature || extra)
     throw new PlanError("invalid_cursor", 400, "Invalid cursor");
@@ -55,17 +60,19 @@ function decodeCursor(
   try {
     const value = JSON.parse(Buffer.from(encoded, "base64url").toString()) as {
       owner?: string;
+      scope?: string;
       createdAt?: string;
       id?: string;
       issuedAt?: number;
     };
     if (
       value.owner !== owner ||
+      value.scope !== scope ||
       typeof value.createdAt !== "string" ||
       typeof value.id !== "string" ||
       !Number.isSafeInteger(value.issuedAt) ||
       value.issuedAt! > now ||
-      value.issuedAt! + ttlSeconds * 1000 < now
+      value.issuedAt! + ttlSeconds * 1000 <= now
     )
       throw new Error("cursor mismatch");
     return { createdAt: value.createdAt, id: value.id };
@@ -81,34 +88,165 @@ function preference(value: unknown): WatchPreference {
   return value;
 }
 
-function quotaResponse(row: Document | null) {
-  if (!row || typeof row.snapshotId !== "string" || !row.snapshotId)
-    return null;
-  const rawRemaining = effectiveRemaining(row);
-  return {
-    snapshotId: row.snapshotId ?? null,
-    sectionId: row.sectionId ?? null,
-    capacity:
-      typeof row.capacity === "number" && Number.isFinite(row.capacity)
+function isUnavailableWatchTarget(error: unknown): boolean {
+  return (
+    error instanceof PlanError &&
+    (error.code === "not_found" || error.code === "term_not_selectable")
+  );
+}
+
+/** Per-component aggregation of the quota rows behind a watched target. */
+type ComponentQuota = {
+  componentType: string;
+  sections: number;
+  observed: number;
+  missing: number;
+  stale: number;
+  full: number;
+  unknown: number;
+  remainingMin: number | null;
+  remainingMax: number | null;
+  waitlisted: number;
+};
+
+/**
+ * Summarizes quota across every section behind a watched target.
+ *
+ * A course watch used to report the single most recently observed section.
+ * Because every section in an import batch shares one `observedAt`, the sort
+ * fell through to `snapshotId` descending — so the number shown was whichever
+ * section had the highest class number. That is a tie-break artifact rather
+ * than an answer, and it hid real cases: a course with several full tutorials
+ * could still display a comfortable positive number.
+ *
+ * This reports a range per component type instead, plus how many sections are
+ * actually full. A section counts as full only with a known positive capacity
+ * and zero remaining; a row without usable capacity is `unknown`, matching
+ * `quotaSectionScore` in the planner so the two never disagree.
+ */
+function quotaSummary(
+  rows: Document[],
+  componentBySectionId: Map<string, string>,
+  totalSections = rows.length,
+  ttlSeconds = 900,
+  now = new Date(),
+) {
+  if (!totalSections) return null;
+  const groups = new Map<string, ComponentQuota>();
+  let oldestAt: string | null = null;
+  for (const row of rows) {
+    const componentType =
+      componentBySectionId.get(String(row.sectionId)) ?? "OTHER";
+    const remainingValue = effectiveRemaining(row);
+    const remaining =
+      remainingValue === null ? null : Math.max(0, remainingValue);
+    const capacity =
+      typeof row.capacity === "number" && row.capacity > 0
         ? row.capacity
-        : null,
-    enrolled:
-      typeof row.enrolled === "number" && Number.isFinite(row.enrolled)
-        ? row.enrolled
-        : null,
-    remaining: rawRemaining === null ? null : Math.max(0, rawRemaining),
-    waitlisted:
+        : null;
+    const usable = remaining !== null && capacity !== null;
+    const waitlisted =
       typeof row.waitlisted === "number" && Number.isFinite(row.waitlisted)
         ? Math.max(0, row.waitlisted)
-        : null,
-    reserveCapacity:
-      typeof row.reserveCapacity === "number" &&
-      Number.isFinite(row.reserveCapacity)
-        ? row.reserveCapacity
-        : null,
-    open: typeof row.open === "boolean" ? row.open : null,
-    observedAt: row.observedAt ?? null,
-    ...(rawRemaining !== null && rawRemaining < 0 ? { rawRemaining } : {}),
+        : 0;
+
+    const group = groups.get(componentType) ?? {
+      componentType,
+      sections: 0,
+      observed: 0,
+      missing: 0,
+      stale: 0,
+      full: 0,
+      unknown: 0,
+      remainingMin: null,
+      remainingMax: null,
+      waitlisted: 0,
+    };
+    group.sections += 1;
+    const observedAt =
+      typeof row.observedAt === "string" ? row.observedAt : null;
+    if (observedAt) group.observed += 1;
+    if (!observedAt) group.missing += 1;
+    else if (
+      !Number.isFinite(Date.parse(observedAt)) ||
+      Date.parse(observedAt) + ttlSeconds * 1000 <= now.getTime()
+    )
+      group.stale += 1;
+    group.waitlisted += waitlisted;
+    if (!usable) {
+      group.unknown += 1;
+    } else {
+      group.remainingMin =
+        group.remainingMin === null
+          ? remaining
+          : Math.min(group.remainingMin, remaining);
+      group.remainingMax =
+        group.remainingMax === null
+          ? remaining
+          : Math.max(group.remainingMax, remaining);
+      if (remaining === 0) group.full += 1;
+    }
+    groups.set(componentType, group);
+
+    if (observedAt && (oldestAt === null || observedAt < oldestAt))
+      oldestAt = observedAt;
+  }
+
+  for (const [sectionId, componentType] of componentBySectionId) {
+    if (rows.some((row) => String(row.sectionId) === sectionId)) continue;
+    const group = groups.get(componentType) ?? {
+      componentType,
+      sections: 0,
+      observed: 0,
+      missing: 0,
+      stale: 0,
+      full: 0,
+      unknown: 0,
+      remainingMin: null,
+      remainingMax: null,
+      waitlisted: 0,
+    };
+    group.sections += 1;
+    group.missing += 1;
+    groups.set(componentType, group);
+  }
+
+  const components = [...groups.values()].sort((left, right) =>
+    left.componentType.localeCompare(right.componentType),
+  );
+  const mins = components
+    .map((component) => component.remainingMin)
+    .filter((value): value is number => value !== null);
+  const maxes = components
+    .map((component) => component.remainingMax)
+    .filter((value): value is number => value !== null);
+  return {
+    observedAt: oldestAt,
+    sections: totalSections,
+    observedSections: components.reduce(
+      (total, component) => total + component.observed,
+      0,
+    ),
+    missingSections: components.reduce(
+      (total, component) => total + component.missing,
+      0,
+    ),
+    staleSections: components.reduce(
+      (total, component) => total + component.stale,
+      0,
+    ),
+    full: components.reduce((total, component) => total + component.full, 0),
+    unknown: components.reduce(
+      (total, component) => total + component.unknown,
+      0,
+    ),
+    remainingMin: mins.length ? Math.min(...mins) : null,
+    remainingMax: maxes.length ? Math.max(...maxes) : null,
+    waitlisted: components.reduce(
+      (total, component) => total + component.waitlisted,
+      0,
+    ),
+    components,
   };
 }
 
@@ -174,10 +312,19 @@ export class WatchingService {
         409,
         "Academic term has no active course data",
       );
+    if (
+      !(await selectableTerms(this.db)).some((row) => row.termCode === termCode)
+    )
+      throw new PlanError(
+        "term_not_selectable",
+        409,
+        "Only the four most recent terms are selectable",
+      );
     return term;
   }
 
-  private async sectionIdsForCourse(term: Document, courseId: string) {
+  /** Live sections of a course, with the component type each one belongs to. */
+  private async sectionRowsForCourse(term: Document, courseId: string) {
     const offerings = await this.db
       .collection("courseOfferings")
       .find({
@@ -205,9 +352,20 @@ export class WatchingService {
         retiredAt: null,
         offeringId: { $in: offeringIds },
       })
-      .project({ sectionId: 1 })
+      .project({ sectionId: 1, componentType: 1 })
       .toArray();
-    return sections.map((row) => String(row.sectionId));
+    return sections.map((row) => ({
+      sectionId: String(row.sectionId),
+      componentType:
+        typeof row.componentType === "string" && row.componentType
+          ? row.componentType
+          : "OTHER",
+    }));
+  }
+
+  private async sectionIdsForCourse(term: Document, courseId: string) {
+    const rows = await this.sectionRowsForCourse(term, courseId);
+    return rows.map((row) => row.sectionId);
   }
 
   private async sectionBaseline(sectionIds: string[]) {
@@ -297,48 +455,63 @@ export class WatchingService {
     const notificationPreference = preference(requestedPreference);
     const watches = this.db.collection<CourseWatchDocument>("courseWatches");
     const identity = { ownerUsername: owner, termCode, targetType, targetId };
-    const existing = await watches.findOne(identity);
-    const now = this.now().toISOString();
-    if (existing) {
-      if (existing.notificationPreference === notificationPreference)
-        return this.response(existing);
-      const update =
-        existing.notificationPreference === "none" &&
-        notificationPreference === "in_app"
-          ? {
-              notificationPreference,
-              baselineRecordedAt: now,
-              baselineBySection: await this.sectionBaseline(sectionIds),
-              updatedAt: now,
-            }
-          : { notificationPreference, updatedAt: now };
-      await watches.updateOne(identity, { $set: update });
-      return this.response((await watches.findOne(identity))!);
-    }
-    const watch: CourseWatchDocument = {
-      ...identity,
-      watchId: randomUUID(),
-      notificationPreference,
-      baselineRecordedAt: now,
-      baselineBySection: await this.sectionBaseline(sectionIds),
-      createdAt: now,
-      updatedAt: now,
-    };
-    try {
-      await watches.insertOne(watch);
-    } catch (error) {
-      if (
-        !(
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          error.code === 11000
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const existing = await watches.findOne(identity);
+      const now = this.now().toISOString();
+      if (existing) {
+        if (existing.notificationPreference === notificationPreference)
+          return this.response(existing);
+        const update =
+          existing.notificationPreference === "none" &&
+          notificationPreference === "in_app"
+            ? {
+                notificationPreference,
+                baselineRecordedAt: now,
+                baselineBySection: await this.sectionBaseline(sectionIds),
+                updatedAt: now,
+              }
+            : { notificationPreference, updatedAt: now };
+        const updated = await watches.findOneAndUpdate(
+          {
+            ...identity,
+            watchId: existing.watchId,
+            notificationPreference: existing.notificationPreference,
+          },
+          { $set: update },
+          { returnDocument: "after" },
+        );
+        if (updated) return this.response(updated);
+        continue;
+      }
+      const watch: CourseWatchDocument = {
+        ...identity,
+        watchId: randomUUID(),
+        notificationPreference,
+        baselineRecordedAt: now,
+        baselineBySection: await this.sectionBaseline(sectionIds),
+        createdAt: now,
+        updatedAt: now,
+      };
+      try {
+        await watches.insertOne(watch);
+        return this.response(watch);
+      } catch (error) {
+        if (
+          !(
+            error &&
+            typeof error === "object" &&
+            "code" in error &&
+            error.code === 11000
+          )
         )
-      )
-        throw error;
-      return this.response((await watches.findOne(identity))!);
+          throw error;
+      }
     }
-    return this.response(watch);
+    throw new PlanError(
+      "concurrent_modification",
+      409,
+      "Watch changed concurrently; retry",
+    );
   }
 
   async remove(
@@ -383,11 +556,17 @@ export class WatchingService {
       ...(query.termCode ? { termCode: query.termCode } : {}),
       ...(query.targetType ? { targetType: query.targetType } : {}),
     };
+    const scope = JSON.stringify({
+      kind: "watches",
+      termCode: query.termCode ?? null,
+      targetType: query.targetType ?? null,
+    });
     const cursor = query.cursor
       ? decodeCursor(
           this.settings.cursorKey,
           query.cursor,
           owner,
+          scope,
           this.settings.cursorTtlSeconds,
           now.getTime(),
         )
@@ -405,38 +584,99 @@ export class WatchingService {
     const visible = rows.slice(0, query.limit);
     const items = await Promise.all(
       visible.map(async (watch) => {
-        const sectionIds =
-          watch.targetType === "section"
-            ? [watch.targetId]
-            : await this.sectionIdsForCourse(
-                await this.activeTerm(watch.termCode),
-                watch.targetId,
-              ).catch(() => []);
-        const latest = sectionIds.length
+        let sectionRows: Array<{ sectionId: string; componentType: string }>;
+        let term: Document | null = null;
+        try {
+          term = await this.activeTerm(watch.termCode);
+        } catch (error) {
+          if (!isUnavailableWatchTarget(error)) throw error;
+        }
+        if (watch.targetType === "section") {
+          const section = term
+            ? await this.db.collection("classSections").findOne(
+                {
+                  source: ACADEMIC_SOURCE,
+                  termCode: watch.termCode,
+                  importBatchId: term.activeImportBatchId,
+                  retiredAt: null,
+                  sectionId: watch.targetId,
+                },
+                { projection: { componentType: 1 } },
+              )
+            : null;
+          sectionRows = section
+            ? [
+                {
+                  sectionId: watch.targetId,
+                  componentType:
+                    typeof section?.componentType === "string" &&
+                    section.componentType
+                      ? section.componentType
+                      : "OTHER",
+                },
+              ]
+            : [];
+        } else {
+          try {
+            sectionRows = term
+              ? await this.sectionRowsForCourse(term, watch.targetId)
+              : [];
+          } catch (error) {
+            if (!isUnavailableWatchTarget(error)) throw error;
+            sectionRows = [];
+          }
+        }
+
+        const sectionIds = sectionRows.map((row) => row.sectionId);
+        // Every row is needed: the summary reports a range per component type,
+        // and taking a single row is what produced the misleading figure.
+        const quotaRows = sectionIds.length
           ? await this.db
               .collection("latestQuotas")
               .find({ source: ACADEMIC_SOURCE, sectionId: { $in: sectionIds } })
-              .sort({ observedAt: -1, snapshotId: -1, sectionId: 1 })
-              .limit(1)
-              .next()
-          : null;
+              .toArray()
+          : [];
+        const oldest = quotaRows.reduce<Document | null>(
+          (latest, row) =>
+            latest === null ||
+            String(row.observedAt ?? "") < String(latest.observedAt ?? "")
+              ? row
+              : latest,
+          null,
+        );
         const freshness = quotaFreshness(
-          latest,
+          oldest,
           this.settings.quotaTtlSeconds,
           now,
         );
-        const remaining = effectiveRemaining(latest ?? {});
-        const dataQuality = !latest?.snapshotId
-          ? ["quota_missing"]
-          : freshness.isStale
-            ? ["quota_stale"]
-            : [];
-        if (remaining !== null && remaining < 0)
+        const missing =
+          quotaRows.length < sectionRows.length ||
+          quotaRows.some((row) => !row.snapshotId);
+        const dataQuality = [
+          ...(missing ? ["quota_missing"] : []),
+          ...(freshness.isStale && quotaRows.length ? ["quota_stale"] : []),
+        ];
+        if (
+          quotaRows.some((row) => {
+            const value = effectiveRemaining(row);
+            return value !== null && value < 0;
+          })
+        )
           dataQuality.push("quota_inconsistent");
         return {
           ...this.response(watch),
-          latestQuota: quotaResponse(latest),
-          freshness,
+          quotaSummary: quotaSummary(
+            quotaRows,
+            new Map(
+              sectionRows.map((row) => [row.sectionId, row.componentType]),
+            ),
+            sectionRows.length,
+            this.settings.quotaTtlSeconds,
+            now,
+          ),
+          freshness: missing
+            ? { ...freshness, isStale: true, state: "stale" }
+            : freshness,
           dataQuality,
         };
       }),
@@ -451,6 +691,7 @@ export class WatchingService {
             ? encodeCursor(
                 this.settings.cursorKey,
                 owner,
+                scope,
                 last.createdAt,
                 last.watchId,
                 now.getTime(),
@@ -472,11 +713,16 @@ export class WatchingService {
       ownerUsername: owner,
       ...(query.unreadOnly ? { readAt: null } : {}),
     };
+    const scope = JSON.stringify({
+      kind: "notifications",
+      unreadOnly: query.unreadOnly,
+    });
     const cursor = query.cursor
       ? decodeCursor(
           this.settings.cursorKey,
           query.cursor,
           owner,
+          scope,
           this.settings.cursorTtlSeconds,
           now.getTime(),
         )
@@ -502,6 +748,7 @@ export class WatchingService {
             ? encodeCursor(
                 this.settings.cursorKey,
                 owner,
+                scope,
                 last.createdAt,
                 last.notificationId,
                 now.getTime(),
@@ -516,12 +763,17 @@ export class WatchingService {
     const notifications =
       this.db.collection<WatchNotificationDocument>("watchNotifications");
     const result = await notifications.findOneAndUpdate(
-      { ownerUsername: owner, notificationId },
+      { ownerUsername: owner, notificationId, readAt: null },
       { $set: { readAt: this.now().toISOString() } },
       { returnDocument: "after" },
     );
-    if (!result)
+    if (result) return notificationResponse(result);
+    const existing = await notifications.findOne({
+      ownerUsername: owner,
+      notificationId,
+    });
+    if (!existing)
       throw new PlanError("not_found", 404, "Notification not found");
-    return notificationResponse(result);
+    return notificationResponse(existing);
   }
 }

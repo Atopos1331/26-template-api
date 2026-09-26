@@ -6,7 +6,6 @@ export type QuotaObservationLike = {
   enrolled?: number | null;
   remaining?: number | null;
   waitlisted?: number | null;
-  open?: boolean | null;
 };
 
 export type QuotaTrendWindow = "7d" | "14d" | "term";
@@ -179,11 +178,7 @@ export type DifficultyResult = {
   version: "difficulty-v1";
   score: number | null;
   components: Array<{
-    name:
-      | "remaining_pressure"
-      | "waitlist_pressure"
-      | "seat_trend"
-      | "openness";
+    name: "remaining_pressure" | "waitlist_pressure" | "seat_trend";
     value: number | null;
     weight: number;
   }>;
@@ -236,15 +231,6 @@ export function enrollmentDifficulty(
     });
   } else {
     dataQuality.push("remaining_trend_missing");
-  }
-  if (latest?.open === true || latest?.open === false) {
-    components.push({
-      name: "openness",
-      value: latest.open ? 0 : 100,
-      weight: 0.2,
-    });
-  } else {
-    dataQuality.push("openness_missing");
   }
   const totalWeight = components.reduce(
     (sum, component) => sum + component.weight,

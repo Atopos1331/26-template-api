@@ -1,0 +1,1267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>USThing timetable</title>
+    <meta
+      name="description"
+      content="Search HKUST courses, build a term plan, and watch for seat changes."
+    />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!-- ==================================================================
+         Masthead. Brand and the section tabs share the top row so navigation
+         sits directly under the wordmark, and the connection panel drops to
+         its own right-aligned strip below. Keeping the tabs out of the middle
+         of the header is what stops the header reading as three stacked bands.
+         ================================================================== -->
+    <header class="masthead">
+      <div class="masthead-inner">
+        <a class="brand" href="#schedule" aria-label="USThing timetable home">
+          <span class="brand-mark" aria-hidden="true">U</span>
+          <span class="brand-text">
+            <strong>USThing timetable</strong>
+            <small>HKUST course planning</small>
+          </span>
+        </a>
+
+        <!-- Five destinations, grouped by the job a student is doing:
+             read the timetable, plan it, find courses, watch for changes,
+             and a developer sandbox. -->
+        <nav class="tabs" aria-label="Workspace sections">
+          <button
+            class="tab active"
+            data-tab="schedule"
+            aria-current="page"
+            title="Timetable and conflicts: press G then K"
+            type="button"
+          >
+            Schedule
+          </button>
+          <button
+            class="tab"
+            data-tab="plan"
+            title="Course planning: press G then P"
+            type="button"
+          >
+            Plan
+          </button>
+          <button
+            class="tab"
+            data-tab="courses"
+            title="Course catalog: press G then C"
+            type="button"
+          >
+            Courses
+          </button>
+          <button
+            class="tab"
+            data-tab="watching"
+            title="Watches and discovery: press G then S"
+            type="button"
+          >
+            Watching
+          </button>
+          <button
+            class="tab"
+            data-tab="developer"
+            title="Quota and API tools: press G then T"
+            type="button"
+          >
+            Developer
+          </button>
+        </nav>
+
+        <details class="connection">
+          <summary class="connection-summary">
+            <span id="health-state" class="status offline">Checking</span>
+            <span class="connection-summary-label">Connection</span>
+          </summary>
+          <div class="connection-fields">
+            <label>
+              <span>API address</span>
+              <input
+                id="api-base"
+                type="url"
+                value="http://localhost:3000"
+                spellcheck="false"
+              />
+            </label>
+            <label>
+              <span>Signed in as</span>
+              <select id="identity">
+                <option value="alice">Alice</option>
+                <option value="bob">Bob</option>
+                <option value="custom">Custom token</option>
+              </select>
+            </label>
+            <label id="custom-token-wrap" hidden>
+              <span>Bearer token</span>
+              <input id="custom-token" type="password" autocomplete="off" />
+            </label>
+            <button id="health-button" class="button secondary" type="button">
+              Test connection
+            </button>
+          </div>
+        </details>
+      </div>
+    </header>
+
+    <!-- Active-plan strip. One instance, shared by every tab, because both the
+         Plan tab and "add to plan" on Courses operate on the same selection.
+         Hidden until a plan is chosen so it does not add noise up front. -->
+    <div id="plan-context" class="context-bar" hidden>
+      <label class="field">
+        <span>Adding courses to</span>
+        <select id="plan-select">
+          <option value="">No plans yet</option>
+        </select>
+      </label>
+      <p id="plan-summary" class="context-bar-note">No plan selected.</p>
+      <div id="plan-actions" class="context-bar-actions" hidden>
+        <button id="activate-plan" class="button primary small" type="button">
+          Activate
+        </button>
+        <button id="archive-plan" class="button secondary small" type="button">
+          Archive
+        </button>
+      </div>
+    </div>
+
+    <main class="page">
+      <!-- ==================================================================
+           SCHEDULE — the merged calendar + events tab. Answers "what does my
+           week look like and does anything clash".
+           ================================================================== -->
+      <section class="tab-panel active" data-panel="schedule">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Timetable</p>
+            <h1>Your schedule</h1>
+            <p class="lede">
+              Classes, exams, and personal events in one view. Check a date
+              range for clashes, or export the whole term.
+            </p>
+          </div>
+          <button class="shortcut" data-shortcut="current-term" type="button">
+            Next 90 days
+          </button>
+        </div>
+
+        <div class="toolbar">
+          <div class="form-grid four">
+            <label class="field">
+              <span>From</span>
+              <input id="calendar-from" type="date" />
+            </label>
+            <label class="field">
+              <span>To (exclusive)</span>
+              <input id="calendar-to" type="date" />
+            </label>
+            <label class="field">
+              <span>Term</span>
+              <select id="calendar-term"></select>
+            </label>
+            <label class="field">
+              <span>Plan</span>
+              <select id="calendar-plan">
+                <option value="">All plans</option>
+              </select>
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="calendar-load" class="button primary" type="button">
+              Load schedule
+            </button>
+            <button id="conflict-load" class="button secondary" type="button">
+              Check conflicts
+            </button>
+            <button id="calendar-banner" class="button secondary" type="button">
+              Next 24 hours
+            </button>
+            <button id="calendar-export" class="button secondary" type="button">
+              Export .ics
+            </button>
+          </div>
+        </div>
+
+        <div id="calendar-banner-result" class="result-block compact">
+          <div class="empty">Next-24-hours banner not loaded.</div>
+        </div>
+
+        <section class="panel section-spaced">
+          <div class="section-title">
+            <h2>Week at a glance</h2>
+            <span class="badge accent">From your loaded range</span>
+          </div>
+          <div id="calendar-results" class="result-block">
+            <div class="empty">
+              Load a date range to see your classes and events.
+            </div>
+          </div>
+        </section>
+
+        <section class="panel section-spaced event-form">
+          <div class="section-title">
+            <h2>Add a personal event</h2>
+            <p class="section-note">
+              Deadlines, study blocks, and anything your classes do not already
+              cover.
+            </p>
+            <button class="shortcut" data-shortcut="event-example" type="button">
+              Fill with an example
+            </button>
+          </div>
+
+          <div class="field-group">
+            <p class="field-group-title">What</p>
+            <div class="form-grid three">
+              <label class="field">
+                <span>Title</span>
+                <input id="event-title" value="Study group" />
+              </label>
+              <label class="field">
+                <span>Type</span>
+                <select id="event-type">
+                  <option value="other">Other</option>
+                  <option value="class">Class</option>
+                  <option value="exam">Exam</option>
+                  <option value="deadline">Deadline</option>
+                  <option value="reminder">Reminder</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Repeats</span>
+                <select id="event-mode">
+                  <option value="timed">Once, timed</option>
+                  <option value="all-day">Once, all day</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+              </label>
+            </div>
+            <div class="form-grid three">
+              <label class="field">
+                <span>Location</span>
+                <input id="event-location" />
+              </label>
+              <label class="field">
+                <span>Description</span>
+                <input id="event-description" />
+              </label>
+              <label class="field">
+                <span>Colour</span>
+                <input id="event-color" type="color" value="#0f766e" />
+              </label>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <p class="field-group-title">When</p>
+            <div class="form-grid four">
+              <label class="field">
+                <span>Date</span>
+                <input id="event-date" type="date" />
+              </label>
+              <label class="field" data-event-mode="timed weekly">
+                <span>Starts</span>
+                <input id="event-start" type="time" value="10:00" />
+              </label>
+              <label class="field" data-event-mode="timed weekly">
+                <span>Ends</span>
+                <input id="event-end" type="time" value="11:00" />
+              </label>
+              <label class="field" data-event-mode="all-day">
+                <span>End date</span>
+                <input id="event-end-date" type="date" />
+              </label>
+              <label class="field" data-event-mode="timed weekly">
+                <span>Time zone</span>
+                <input id="event-timezone" value="Asia/Hong_Kong" />
+              </label>
+            </div>
+            <div class="weekly-fields" data-event-mode="weekly">
+              <span class="field-label">Repeats on</span>
+              <label><input type="checkbox" name="event-weekday" value="MO" /> Mon</label>
+              <label><input type="checkbox" name="event-weekday" value="WE" /> Wed</label>
+              <label><input type="checkbox" name="event-weekday" value="FR" /> Fri</label>
+              <label class="field until-field">
+                <span>Repeat until</span>
+                <input id="event-until" type="date" />
+              </label>
+            </div>
+          </div>
+
+          <details class="disclosure">
+            <summary>Sync and conflict metadata</summary>
+            <div class="disclosure-body">
+              <div class="form-grid three">
+                <label class="field">
+                  <span>Source name</span>
+                  <input id="event-source-name" />
+                </label>
+                <label class="field">
+                  <span>External ID</span>
+                  <input id="event-external-id" />
+                </label>
+                <label class="field">
+                  <span>Replaces calendar item</span>
+                  <input id="event-supersedes" />
+                </label>
+              </div>
+              <label class="checkbox-line">
+                <input id="event-blocks-time" type="checkbox" checked />
+                Counts as busy time when checking for clashes
+              </label>
+            </div>
+          </details>
+
+          <div class="form-actions">
+            <button id="event-create" class="button primary" type="button">
+              Add event
+            </button>
+            <button id="event-cancel-edit" class="button secondary" type="button" hidden>
+              Cancel edit
+            </button>
+          </div>
+        </section>
+
+        <section class="panel section-spaced">
+          <div class="section-title">
+            <h2>Your events</h2>
+            <button id="event-list" class="link-button" type="button">
+              Refresh
+            </button>
+          </div>
+          <div class="form-grid three event-filters">
+            <label class="field">
+              <span>Event type</span>
+              <select id="event-filter-type">
+                <option value="">All types</option>
+                <option value="class">Class</option>
+                <option value="exam">Exam</option>
+                <option value="deadline">Deadline</option>
+                <option value="reminder">Reminder</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Source</span>
+              <select id="event-filter-source">
+                <option value="">All sources</option>
+                <option value="manual">Manual</option>
+                <option value="ics">Imported</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Editability</span>
+              <select id="event-filter-readonly">
+                <option value="">All events</option>
+                <option value="false">Editable</option>
+                <option value="true">Read-only</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-grid two event-filters">
+            <label class="field">
+              <span>From</span>
+              <input id="event-filter-from" type="date" />
+            </label>
+            <label class="field">
+              <span>To (exclusive)</span>
+              <input id="event-filter-to" type="date" />
+            </label>
+          </div>
+          <div id="event-results" class="list">
+            <div class="empty">No events loaded.</div>
+          </div>
+          <div id="event-pagination" class="page-nav"></div>
+        </section>
+
+        <details class="disclosure ics-tools panel section-spaced">
+          <summary>Import a calendar file (.ics)</summary>
+          <div class="disclosure-body">
+            <div class="form-grid three">
+              <label class="field">
+                <span>From</span>
+                <input id="ics-from" type="date" />
+              </label>
+              <label class="field">
+                <span>To (exclusive)</span>
+                <input id="ics-to" type="date" />
+              </label>
+              <label class="field">
+                <span>Imported events block time</span>
+                <select id="ics-blocks">
+                  <option value="">Use calendar default</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+            </div>
+            <label class="field">
+              <span>ICS content</span>
+              <textarea
+                id="ics-body"
+                rows="8"
+                spellcheck="false"
+                placeholder="BEGIN:VCALENDAR
+VERSION:2.0
+..."
+              ></textarea>
+            </label>
+            <label class="field">
+              <span>Or choose an .ics file</span>
+              <input id="ics-file" type="file" accept=".ics,text/calendar" />
+            </label>
+            <div class="form-actions">
+              <button id="ics-import" class="button primary" type="button">
+                Import calendar
+              </button>
+              <button id="refresh-ics-imports" class="button secondary" type="button">
+                Refresh imports
+              </button>
+            </div>
+            <div id="ics-imports" class="list">
+              <div class="empty">No imports loaded.</div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- ==================================================================
+           PLAN — build the timetable. One plan in focus, chosen in the
+           context bar, with generation and review side by side.
+           ================================================================== -->
+      <section class="tab-panel" data-panel="plan">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Course planning</p>
+            <h1>Build your plan</h1>
+            <p class="lede">
+              Pick a term, add the courses you want, then let the solver propose
+              combinations that fit your constraints.
+            </p>
+          </div>
+          <button class="shortcut" data-shortcut="autoplan" type="button">
+            Try MATH1013 + COMP2012
+          </button>
+        </div>
+
+        <div class="planning-grid">
+          <section class="panel">
+            <div class="section-title">
+              <h2>Your plans</h2>
+              <button id="refresh-plans" class="link-button" type="button">
+                Refresh
+              </button>
+            </div>
+
+            <div class="field-group">
+              <p class="field-group-title">Start a new plan</p>
+              <label class="field">
+                <span>Name</span>
+                <input id="plan-name" value="My timetable" />
+              </label>
+              <div class="form-grid two">
+                <label class="field">
+                  <span>Description</span>
+                  <input id="plan-description" />
+                </label>
+                <label class="field">
+                  <span>Term</span>
+                  <select id="plan-term"></select>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button id="create-plan" class="button primary" type="button">
+                  Create draft plan
+                </button>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <p class="field-group-title">Browse</p>
+              <label class="field">
+                <span>Status filter</span>
+                <select id="plan-filter-status">
+                  <option value="">All statuses</option>
+                  <option value="draft">Draft</option>
+                  <option value="active">Active</option>
+                  <option value="archived">Archived</option>
+                </select>
+              </label>
+              <div id="plan-pagination" class="page-nav"></div>
+            </div>
+
+            <details id="plan-edit-fields" class="disclosure" hidden>
+              <summary>Rename or re-describe this plan</summary>
+              <div class="disclosure-body">
+                <label class="field">
+                  <span>Plan name</span>
+                  <input id="plan-edit-name" />
+                </label>
+                <label class="field">
+                  <span>Description</span>
+                  <input id="plan-edit-description" />
+                </label>
+                <div class="form-actions">
+                  <button id="save-plan" class="button secondary small" type="button">
+                    Save details
+                  </button>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel">
+            <div class="section-title">
+              <h2>Generate options</h2>
+              <span class="badge">Preview only</span>
+              <p class="section-note">
+                Nothing is written until you apply an option.
+              </p>
+            </div>
+
+            <label class="field">
+              <span>Courses to include, one per line</span>
+              <textarea
+                id="autoplan-courses"
+                rows="4"
+                spellcheck="false"
+                placeholder="MATH1013
+COMP2012"
+              ></textarea>
+            </label>
+
+            <div class="form-grid three">
+              <label class="field">
+                <span>Optimise for</span>
+                <select id="autoplan-mode">
+                  <option value="coverage_first">Course coverage</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="seat_safety">Seat availability</option>
+                  <option value="custom">Custom weights</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Options to show</span>
+                <input id="autoplan-limit" type="number" min="1" max="10" value="3" />
+              </label>
+              <label class="field">
+                <span>Unknown quota</span>
+                <select id="autoplan-quota-policy">
+                  <option value="allow">Allow</option>
+                  <option value="exclude">Exclude</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="form-grid two">
+              <label class="field">
+                <span>Minimum credits</span>
+                <input id="autoplan-min-credits" type="number" min="0" max="60" step="0.5" />
+              </label>
+              <label class="field">
+                <span>Maximum credits</span>
+                <input id="autoplan-max-credits" type="number" min="0" max="60" step="0.5" />
+              </label>
+            </div>
+
+            <label class="checkbox-line">
+              <input id="autoplan-include-selected" type="checkbox" checked />
+              Keep courses already selected in this plan
+            </label>
+
+            <div class="form-actions">
+              <button id="autoplan-run" class="button primary" type="button">
+                Generate options
+              </button>
+            </div>
+
+            <details class="constraint-panel">
+              <summary>Schedule constraints</summary>
+              <div class="constraint-grid">
+                <div class="constraint-block">
+                  <strong>Unavailable window</strong>
+                  <div class="day-checks" id="unavailable-days">
+                    <label><input type="checkbox" value="MO" /> Mon</label>
+                    <label><input type="checkbox" value="TU" /> Tue</label>
+                    <label><input type="checkbox" value="WE" /> Wed</label>
+                    <label><input type="checkbox" value="TH" /> Thu</label>
+                    <label><input type="checkbox" value="FR" /> Fri</label>
+                    <label><input type="checkbox" value="SA" /> Sat</label>
+                    <label><input type="checkbox" value="SU" /> Sun</label>
+                  </div>
+                  <div class="form-grid two">
+                    <label class="field">
+                      <span>From</span>
+                      <input id="unavailable-start" type="time" value="18:00" />
+                    </label>
+                    <label class="field">
+                      <span>To</span>
+                      <input id="unavailable-end" type="time" value="23:00" />
+                    </label>
+                  </div>
+                </div>
+
+                <div class="constraint-block">
+                  <strong>Free weekdays</strong>
+                  <div class="day-checks" id="free-days">
+                    <label><input type="checkbox" value="MO" /> Mon</label>
+                    <label><input type="checkbox" value="TU" /> Tue</label>
+                    <label><input type="checkbox" value="WE" /> Wed</label>
+                    <label><input type="checkbox" value="TH" /> Thu</label>
+                    <label><input type="checkbox" value="FR" /> Fri</label>
+                    <label><input type="checkbox" value="SA" /> Sat</label>
+                    <label><input type="checkbox" value="SU" /> Sun</label>
+                  </div>
+                </div>
+
+                <div class="constraint-block">
+                  <strong>Day boundaries</strong>
+                  <div class="form-grid four">
+                    <label class="field">
+                      <span>Earliest start</span>
+                      <input id="autoplan-earliest" type="time" />
+                    </label>
+                    <label class="field">
+                      <span>Latest end</span>
+                      <input id="autoplan-latest" type="time" />
+                    </label>
+                    <label class="field">
+                      <span>Min days off</span>
+                      <input id="autoplan-days-off" type="number" min="0" max="5" />
+                    </label>
+                    <label class="field">
+                      <span>Max campus days</span>
+                      <input id="autoplan-campus-days" type="number" min="0" max="7" />
+                    </label>
+                  </div>
+                </div>
+
+                <div class="constraint-block">
+                  <strong>Workload</strong>
+                  <div class="form-grid two">
+                    <label class="field">
+                      <span>Max daily class minutes</span>
+                      <input id="autoplan-daily-minutes" type="number" min="0" max="1440" step="15" />
+                    </label>
+                    <label class="field">
+                      <span>Preferred instructors</span>
+                      <input id="autoplan-preferred-instructors" placeholder="Name, Name" />
+                    </label>
+                  </div>
+                  <label class="checkbox-line">
+                    <input id="autoplan-allow-waitlist" type="checkbox" />
+                    Include sections with no remaining seats
+                  </label>
+                </div>
+
+                <div class="constraint-block">
+                  <strong>Protected and preferred windows</strong>
+                  <div class="form-grid two">
+                    <label class="field">
+                      <span>Protected windows (JSON)</span>
+                      <textarea
+                        id="autoplan-protected"
+                        rows="2"
+                        spellcheck="false"
+                        placeholder='[{"weekdays":["TU"],"startTime":"12:00","endTime":"14:00"}]'
+                      ></textarea>
+                    </label>
+                    <label class="field">
+                      <span>Preferred windows (JSON)</span>
+                      <textarea
+                        id="autoplan-preferred"
+                        rows="2"
+                        spellcheck="false"
+                        placeholder='[{"weekdays":["FR"],"startTime":"13:00","endTime":"18:00"}]'
+                      ></textarea>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            <details class="constraint-panel">
+              <summary>Groups, weights, and raw request</summary>
+              <div class="constraint-grid">
+                <label class="field">
+                  <span>Optional groups (id: CODE, CODE | min=1 | max=1)</span>
+                  <textarea
+                    id="autoplan-groups"
+                    rows="3"
+                    spellcheck="false"
+                    placeholder="core: MATH1013, COMP2012 | min=1 | max=1"
+                  ></textarea>
+                </label>
+                <label class="field">
+                  <span>Custom weights JSON (required for Custom objective)</span>
+                  <textarea
+                    id="autoplan-weights"
+                    rows="2"
+                    spellcheck="false"
+                    placeholder='{"coverage":40,"seatSafety":20,"timeFit":20,"compactness":10,"instructorFit":10}'
+                  ></textarea>
+                </label>
+                <label class="field">
+                  <span>Fill rules JSON</span>
+                  <textarea
+                    id="autoplan-fill"
+                    rows="3"
+                    spellcheck="false"
+                    placeholder='{"maxCourses":1,"courseCodes":["COMP2612"],"targetCredits":3}'
+                  ></textarea>
+                </label>
+                <label class="field">
+                  <span>Advanced request JSON (merged last)</span>
+                  <textarea
+                    id="autoplan-extra"
+                    rows="5"
+                    spellcheck="false"
+                    placeholder='{"minDifferentBundles":2,"courses":[{"courseCode":"COMP2611","lockedSectionIds":["..."]}]}'
+                  ></textarea>
+                </label>
+              </div>
+            </details>
+
+            <div id="autoplan-results" class="result-block compact">
+              <div class="empty">
+                Select a plan and generate options to compare them here.
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Current contents of the active plan, full width: this is the thing
+             students actually read, so it does not share a column. -->
+        <section class="panel section-spaced">
+          <div class="section-title">
+            <h2>Courses in this plan</h2>
+            <span id="plan-item-count" class="count">0 items</span>
+          </div>
+          <div id="plan-items" class="list">
+            <div class="empty compact-empty">
+              Select a plan above to see its courses.
+            </div>
+          </div>
+        </section>
+
+        <div class="planning-grid secondary-tools">
+          <section class="panel">
+            <div class="section-title">
+              <h2>Suggest one course</h2>
+              <p class="section-note">
+                Finds bundles that slot in around what you have already picked.
+              </p>
+            </div>
+            <div class="form-grid two">
+              <label class="field">
+                <span>Course code</span>
+                <input id="recommend-course" placeholder="COMP2012" />
+              </label>
+              <label class="field">
+                <span>Maximum results</span>
+                <input id="recommend-limit" type="number" min="1" max="50" value="10" />
+              </label>
+            </div>
+            <div class="form-grid two">
+              <label class="field">
+                <span>Minimum credits</span>
+                <input id="recommend-min-credits" type="number" min="0" max="60" step="0.5" />
+              </label>
+              <label class="field">
+                <span>Maximum credits</span>
+                <input id="recommend-max-credits" type="number" min="0" max="60" step="0.5" />
+              </label>
+            </div>
+            <label class="field">
+              <span>Exclude course codes</span>
+              <input id="recommend-excluded" placeholder="COMP1001, MATH1013" />
+            </label>
+            <div class="constraint-block">
+              <strong>Days to avoid</strong>
+              <div class="day-checks" id="recommend-avoid-days">
+                <label><input type="checkbox" value="MO" /> Mon</label>
+                <label><input type="checkbox" value="TU" /> Tue</label>
+                <label><input type="checkbox" value="WE" /> Wed</label>
+                <label><input type="checkbox" value="TH" /> Thu</label>
+                <label><input type="checkbox" value="FR" /> Fri</label>
+                <label><input type="checkbox" value="SA" /> Sat</label>
+                <label><input type="checkbox" value="SU" /> Sun</label>
+              </div>
+            </div>
+            <details class="disclosure">
+              <summary>Time windows (JSON)</summary>
+              <div class="disclosure-body">
+                <label class="field">
+                  <span>Unavailable windows</span>
+                  <textarea
+                    id="recommend-unavailable"
+                    rows="2"
+                    spellcheck="false"
+                    placeholder='[{"weekdays":["MO"],"startTime":"09:00","endTime":"12:00"}]'
+                  ></textarea>
+                </label>
+                <label class="field">
+                  <span>Preferred windows</span>
+                  <textarea
+                    id="recommend-preferred"
+                    rows="2"
+                    spellcheck="false"
+                    placeholder='[{"weekdays":["FR"],"startTime":"13:00","endTime":"18:00"}]'
+                  ></textarea>
+                </label>
+              </div>
+            </details>
+            <label class="checkbox-line">
+              <input id="recommend-waitlist" type="checkbox" />
+              Allow waitlisted sections
+            </label>
+            <div class="form-actions">
+              <button id="recommend-run" class="button secondary" type="button">
+                Suggest bundles
+              </button>
+            </div>
+            <div id="recommend-results" class="result-block compact">
+              <div class="empty">
+                Pick an active plan and a course to get suggestions.
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="section-title">
+              <h2>Share this plan</h2>
+              <button id="refresh-shares" class="link-button" type="button">
+                Refresh
+              </button>
+            </div>
+            <div class="form-grid two">
+              <label class="field">
+                <span>Expires in seconds</span>
+                <input id="share-expiry" type="number" min="1" placeholder="Default" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="create-share" class="button secondary" type="button">
+                Create share link
+              </button>
+            </div>
+            <p id="share-result" class="small-note">
+              Share links need an active plan.
+            </p>
+            <div id="share-list" class="list">
+              <div class="empty compact-empty">
+                Select a plan to see its share links.
+              </div>
+            </div>
+
+            <div class="field-group">
+              <p class="field-group-title">Open a shared plan</p>
+              <label class="field">
+                <span>Share token</span>
+                <input id="shared-plan-token" placeholder="Paste a share token" />
+              </label>
+              <div class="form-actions">
+                <button id="read-shared-plan" class="button secondary" type="button">
+                  Load shared plan
+                </button>
+              </div>
+              <div id="shared-plan-result" class="result-block compact">
+                <div class="empty">A read-only snapshot appears here.</div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           COURSES — catalog search and offering detail.
+           ================================================================== -->
+      <section class="tab-panel" data-panel="courses" id="academic">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Course catalog</p>
+            <h1>Find a course</h1>
+            <p class="lede">
+              Search a term, then inspect its sections and the lecture, lab, and
+              tutorial combinations you can actually enrol in.
+            </p>
+          </div>
+          <button class="shortcut" data-shortcut="math" type="button">
+            Try MATH1013
+          </button>
+        </div>
+
+        <!-- "Add to plan" lives in the detail pane below and targets the plan
+             chosen in the shared context strip at the top of the page. -->
+
+        <div class="toolbar">
+          <div class="form-grid four">
+            <label class="field">
+              <span>Term</span>
+              <select id="academic-term"></select>
+            </label>
+            <label class="field">
+              <span>Course code or keyword</span>
+              <input
+                id="course-search"
+                type="search"
+                title="Press / from anywhere to focus this field"
+                placeholder="e.g. COMP2012"
+              />
+            </label>
+            <label class="field">
+              <span>Subject</span>
+              <input id="course-subject" placeholder="COMP" />
+            </label>
+            <label class="field">
+              <span>Catalog number</span>
+              <input id="course-catalog-number" placeholder="2012" />
+            </label>
+          </div>
+          <div class="toolbar-actions">
+            <button id="course-search-button" class="button primary" type="button">
+              Search courses
+            </button>
+          </div>
+        </div>
+
+        <div class="split-view">
+          <section class="results-pane">
+            <div class="section-title">
+              <h2>Results</h2>
+              <span id="course-count" class="count">Not searched</span>
+            </div>
+            <div id="course-results" class="list">
+              <div class="empty">
+                Enter a course code or keyword to begin.
+              </div>
+            </div>
+            <div id="course-pagination" class="page-nav"></div>
+          </section>
+
+          <section class="detail-pane">
+            <div class="section-title">
+              <h2 id="offering-title">Offering details</h2>
+              <button id="copy-offering" class="link-button" type="button" disabled>
+                Copy offering ID
+              </button>
+            </div>
+            <div id="offering-detail" class="detail-content">
+              <div class="empty">
+                Select a course to see its sections and bundles.
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           WATCHING — seat watches, notifications, and classmate discovery.
+           ================================================================== -->
+      <section class="tab-panel" data-panel="watching">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Monitoring</p>
+            <h1>Watching and discovery</h1>
+            <p class="lede">
+              Track seat availability on the courses you care about, and opt in
+              to find classmates in a section.
+            </p>
+          </div>
+          <button id="refresh-social" class="shortcut" type="button">
+            Refresh everything
+          </button>
+        </div>
+
+        <div class="panel-grid">
+          <section class="panel">
+            <div class="section-title">
+              <h2>Watch a course or section</h2>
+            </div>
+            <div class="form-grid two">
+              <label class="field">
+                <span>Watch a</span>
+                <select id="watch-target-type">
+                  <option value="course">Whole course</option>
+                  <option value="section">Single section</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Term</span>
+                <select id="watch-term"></select>
+              </label>
+            </div>
+            <label class="field">
+              <span>Course code or section ID</span>
+              <input
+                id="watch-target-id"
+                placeholder="COMP2012 or 2610:COMP2012:12345"
+              />
+            </label>
+            <label class="field">
+              <span>Notify me</span>
+              <select id="watch-preference">
+                <option value="in_app">In-app notifications</option>
+                <option value="none">Do not notify</option>
+              </select>
+            </label>
+            <div class="form-actions">
+              <button id="watch-create" class="button primary" type="button">
+                Add watch
+              </button>
+            </div>
+            <div class="field-group">
+              <label class="field">
+                <span>Filter list</span>
+                <select id="watch-filter-target">
+                  <option value="">All watches</option>
+                  <option value="course">Courses only</option>
+                  <option value="section">Sections only</option>
+                </select>
+              </label>
+            </div>
+            <div id="watch-list" class="list">
+              <div class="empty">No watches yet.</div>
+            </div>
+            <div id="watch-pagination" class="page-nav"></div>
+          </section>
+
+          <section class="panel">
+            <div class="section-title">
+              <h2>Notifications</h2>
+              <button id="refresh-notifications" class="link-button" type="button">
+                Refresh
+              </button>
+            </div>
+            <label class="checkbox-line">
+              <input id="notifications-unread" type="checkbox" />
+              Show unread only
+            </label>
+            <div id="notification-list" class="list">
+              <div class="empty">Nothing to report yet.</div>
+            </div>
+            <div id="notification-pagination" class="page-nav"></div>
+          </section>
+
+          <section class="panel">
+            <div class="section-title">
+              <h2>Find classmates</h2>
+              <p class="section-note">
+                Opting in shares a display name with other students in the same
+                section, and expires on its own.
+              </p>
+            </div>
+            <label class="field">
+              <span>Section ID</span>
+              <input id="discovery-section" placeholder="Pick a section in Courses" />
+            </label>
+            <div class="form-grid two">
+              <label class="field">
+                <span>Display name</span>
+                <input id="discovery-name" />
+              </label>
+              <label class="field">
+                <span>Expires in seconds</span>
+                <input id="discovery-expiry" type="number" min="1" placeholder="Default" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="discovery-enable" class="button primary" type="button">
+                Opt in
+              </button>
+              <button id="discovery-disable" class="button secondary" type="button">
+                Opt out
+              </button>
+              <button id="discovery-search" class="button secondary" type="button">
+                Find classmates
+              </button>
+            </div>
+            <div id="discovery-results" class="result-block compact">
+              <div class="empty">Opt in before searching.</div>
+            </div>
+            <div id="discovery-pagination" class="page-nav"></div>
+          </section>
+
+          <section class="panel">
+            <div class="section-title">
+              <h2>Common Core categories</h2>
+            </div>
+            <div class="form-grid two">
+              <label class="field">
+                <span>Admission year</span>
+                <input id="common-core-year" type="number" min="1900" max="2200" />
+              </label>
+              <label class="field">
+                <span>Term</span>
+                <select id="common-core-term"></select>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="common-core-load" class="button secondary" type="button">
+                Load categories
+              </button>
+            </div>
+            <div id="common-core-results" class="result-block compact">
+              <div class="empty">
+                Choose an admission year and term to see which categories you
+                still need.
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- ==================================================================
+           DEVELOPER — quota inspection and a raw API console. Explicitly a
+           sandbox, so it is allowed to be denser than the rest.
+           ================================================================== -->
+      <section class="tab-panel" data-panel="developer">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Developer tools</p>
+            <h1>Quota and API console</h1>
+            <p class="lede">
+              Inspect seat-count history for a section, or send a request
+              straight to any route. This tab is a sandbox.
+            </p>
+          </div>
+        </div>
+
+        <div class="tool-grid">
+          <section class="panel">
+            <div class="section-title">
+              <h2>Section quota</h2>
+            </div>
+            <label class="field">
+              <span>Section ID</span>
+              <input id="quota-section" placeholder="Pick a section in Courses" />
+            </label>
+            <div class="form-grid two">
+              <label class="field">
+                <span>Trend window</span>
+                <select id="quota-window">
+                  <option value="7d">7 days</option>
+                  <option value="14d" selected>14 days</option>
+                  <option value="term">Whole term</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Observations per page</span>
+                <input id="quota-limit" type="number" min="1" max="100" value="30" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="quota-check" class="button primary" type="button">
+                Check quota
+              </button>
+              <button id="quota-trends" class="button secondary" type="button">
+                View trend
+              </button>
+            </div>
+            <div id="quota-result" class="result-block compact">
+              <div class="empty">Enter a section ID to begin.</div>
+            </div>
+            <div id="quota-pagination" class="page-nav"></div>
+          </section>
+
+          <section class="panel examples">
+            <div class="section-title">
+              <h2>Request recipes</h2>
+            </div>
+            <details open>
+              <summary>Search courses</summary>
+              <pre>GET /terms/{termCode}/courses?search=COMP2012</pre>
+            </details>
+            <details>
+              <summary>View section bundles</summary>
+              <pre>GET /offerings/{offeringId}/bundles</pre>
+            </details>
+            <details>
+              <summary>Generate an auto-plan</summary>
+              <pre>POST /plans/{planId}/auto-plans
+{
+  "courses": [{ "courseCode": "MATH1013", "required": true }],
+  "mode": "coverage_first"
+}</pre>
+            </details>
+            <details>
+              <summary>Check calendar conflicts</summary>
+              <pre>GET /calendar/conflicts?from=2026-09-01&amp;to=2026-12-31</pre>
+            </details>
+            <a id="open-api-docs" href="http://localhost:3000/documentation" target="_blank" rel="noreferrer">
+              Open the full OpenAPI reference
+            </a>
+          </section>
+        </div>
+
+        <section class="panel api-explorer section-spaced">
+          <div class="section-title">
+            <h2>Send a request</h2>
+            <button id="api-operations-refresh" class="link-button" type="button">
+              Refresh routes
+            </button>
+          </div>
+          <label class="field">
+            <span>Operation</span>
+            <select id="api-operation">
+              <option value="">Loading routes…</option>
+            </select>
+          </label>
+          <p id="api-operation-summary" class="small-note">
+            Choose an operation to see its parameters.
+          </p>
+          <div id="api-path-parameters" class="form-grid three"></div>
+          <div id="api-query-parameters" class="form-grid three"></div>
+          <div class="form-grid three">
+            <label class="field">
+              <span>Content type</span>
+              <select id="api-content-type">
+                <option value="application/json">application/json</option>
+                <option value="text/calendar">text/calendar</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>If-Match</span>
+              <input id="api-if-match" placeholder='Plan or event ETag, e.g. "3"' />
+            </label>
+            <label class="field">
+              <span>Idempotency-Key</span>
+              <input id="api-idempotency" placeholder="Optional; generated for writes" />
+            </label>
+          </div>
+          <label class="field">
+            <span>Request body</span>
+            <textarea id="api-request-body" rows="8" spellcheck="false"></textarea>
+          </label>
+          <div class="form-actions">
+            <button id="api-operation-send" class="button primary" type="button">
+              Send request
+            </button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <!-- Raw response dock. Collapsed by default: it is a debugging surface, not
+         part of reading your timetable. -->
+    <details class="raw-panel">
+      <summary>
+        <span class="raw-panel-summary-text">
+          <strong id="raw-status">No request yet</strong>
+          <small>Raw API response</small>
+        </span>
+        <button id="raw-clear" class="link-button" type="button">Clear</button>
+      </summary>
+      <pre id="raw-output">Responses appear here after an operation.</pre>
+    </details>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script src="./app.js" defer></script>
+  </body>
+</html>

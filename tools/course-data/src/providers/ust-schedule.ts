@@ -24,7 +24,6 @@ export type RawSection = {
   waitTot: string | null;
   reserveCap?: string | null;
   consent?: boolean | null;
-  classOpen?: boolean | null;
   remarks: string | null;
 };
 export type RawCourse = {
@@ -33,7 +32,6 @@ export type RawCourse = {
   title: string;
   credit: string | null;
   crseId?: string | null;
-  academicCareer?: string | null;
   description?: string | null;
   longDesc?: string | null;
   preReq?: string | null;

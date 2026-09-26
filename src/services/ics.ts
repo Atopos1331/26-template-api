@@ -10,6 +10,7 @@ import type {
   EventImportDocument,
   IdempotencyRecordDocument,
 } from "../plugins/init-mongo.js";
+import { EventRepository } from "../repositories/events.js";
 
 export type IcsSettings = {
   timezone: string;
@@ -628,31 +629,10 @@ export class IcsService {
     return effective.some((row) => row._id.equals(event._id));
   }
 
-  async activeEvents(owner: string) {
-    const manifests = await this.imports
-      .find({ ownerUsername: owner, source: "ics", status: "active" })
-      .sort({ activatedAt: -1, _id: -1 })
-      .toArray();
-    const selected = new Map<string, ObjectId>();
-    for (const manifest of manifests) {
-      const rows = await this.events
-        .find({ ownerUsername: owner, source: "ics", importId: manifest._id })
-        .project({ externalId: 1 })
-        .toArray();
-      for (const row of rows) {
-        const uid = String(row.externalId ?? "");
-        if (!selected.has(uid)) selected.set(uid, manifest._id);
-      }
-    }
-    if (!selected.size) return [];
-    return this.events
-      .find({
-        ownerUsername: owner,
-        source: "ics",
-        importId: { $in: [...selected.values()] },
-        externalId: { $in: [...selected.keys()] },
-      })
-      .toArray();
+  activeEvents(owner: string) {
+    return new EventRepository(this.events, this.imports).activeImportedEvents(
+      owner,
+    );
   }
 
   async effectiveEvents(owner: string, candidates?: WithId<EventDocument>[]) {

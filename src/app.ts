@@ -42,9 +42,17 @@ const app: FastifyPluginAsync<AppOptions> = async (
 ): Promise<void> => {
   // Place here your custom code!
 
-  // Register CORS
+  // Register CORS.
+  //
+  // `methods` must be listed explicitly: @fastify/cors falls back to
+  // `GET,HEAD,POST` when it is omitted, and a browser refuses to send a PATCH
+  // or DELETE whose preflight did not allow that method. Leaving it out made
+  // every mutating route unreachable from the web console — the request never
+  // left the browser, so the UI surfaced a bare network error with no hint
+  // that CORS was the cause.
   await fastify.register(cors, {
     origin: "*",
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
   });
 
   // Register Swagger & Swagger UI & Scalar

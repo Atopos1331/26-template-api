@@ -14,7 +14,7 @@ const alice = { authorization: "Bearer alice-dev-token" };
 const bob = { authorization: "Bearer bob-dev-token" };
 const termCode = "2530";
 const batch = "batch-sharing";
-const offeringId = `${ACADEMIC_SOURCE}:${termCode}:COMP2611:UNKNOWN`;
+const offeringId = `${termCode}:COMP2611`;
 const bundleId = `${offeringId}:12345`;
 const sectionId = `${offeringId}:12345`;
 
@@ -73,7 +73,6 @@ async function seed(db: Db) {
     ...key,
     offeringId,
     courseId: "COMP2611",
-    academicCareer: "UNKNOWN",
   });
   await db.collection("classSections").insertOne({
     ...key,
@@ -399,6 +398,105 @@ test("section classmates require opt-in and only expose current selected matches
         })
       ).statusCode,
     ).toBe(404);
+  } finally {
+    await app.close();
+  }
+});
+
+test("classmates exclude an old opt-in after switching to another offering with the same class number", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    const otherCourseId = "COMP2612";
+    const otherOfferingId = `${termCode}:${otherCourseId}`;
+    const otherBundleId = `${otherOfferingId}:12345`;
+    const key = {
+      source: ACADEMIC_SOURCE,
+      termCode,
+      importBatchId: batch,
+      retiredAt: null,
+    };
+    await db.collection("courses").insertOne({
+      ...key,
+      courseId: otherCourseId,
+      courseCode: otherCourseId,
+      title: "Another course",
+      credits: 3,
+    });
+    await db.collection("courseOfferings").insertOne({
+      ...key,
+      offeringId: otherOfferingId,
+      courseId: otherCourseId,
+    });
+    await db.collection("classSections").insertOne({
+      ...key,
+      sectionId: `${otherOfferingId}:12345`,
+      offeringId: otherOfferingId,
+      classNbr: "12345",
+      sectionCode: "L2",
+      meetings: [],
+      componentType: "LEC",
+    });
+    await db.collection("sectionBundles").insertOne({
+      ...key,
+      bundleId: otherBundleId,
+      offeringId: otherOfferingId,
+      leadClassNbr: "12345",
+      componentClassNbrs: ["12345"],
+      componentTypes: ["LEC"],
+      sectionLabels: ["L2"],
+      derivedSchedule: { meetings: [] },
+    });
+    await createActivePlan(app, alice);
+    const bobPlanId = await createActivePlan(app, bob);
+    for (const [headers, displayName] of [
+      [alice, "Alice Alias"],
+      [bob, "Bob Alias"],
+    ] as const) {
+      const optIn = await app.inject({
+        method: "POST",
+        url: `/sections/${sectionId}/discoverability`,
+        headers,
+        payload: { displayName },
+      });
+      expect(optIn.statusCode).toBe(200);
+    }
+    const before = await app.inject({
+      url: `/sections/${sectionId}/classmates`,
+      headers: alice,
+    });
+    expect(
+      before
+        .json()
+        .items.map((item: { displayName: string }) => item.displayName),
+    ).toEqual(["Bob Alias"]);
+
+    const bobPlan = await app.inject({
+      url: `/plans/${bobPlanId}`,
+      headers: bob,
+    });
+    const itemId = bobPlan.json().data.items[0].itemId as string;
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/plans/${bobPlanId}/items/${itemId}`,
+      headers: { ...bob, "if-match": '"3"' },
+    });
+    expect(removed.statusCode).toBe(200);
+    const added = await app.inject({
+      method: "POST",
+      url: `/plans/${bobPlanId}/items`,
+      headers: { ...bob, "if-match": '"4"' },
+      payload: { offeringId: otherOfferingId, bundleId: otherBundleId },
+    });
+    expect(added.statusCode).toBe(200);
+
+    const after = await app.inject({
+      url: `/sections/${sectionId}/classmates`,
+      headers: alice,
+    });
+    expect(after.statusCode).toBe(200);
+    expect(after.json().items).toEqual([]);
   } finally {
     await app.close();
   }

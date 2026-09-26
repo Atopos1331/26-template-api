@@ -320,6 +320,41 @@ test("external IDs, persisted idempotency and signed cursors", async () => {
   assert.equal(otherOwner.statusCode, 400);
 });
 
+test("hidden ICS rows do not count as another events page", async () => {
+  const app = await buildApp();
+  const created = await app.inject({
+    method: "POST",
+    url: "/events",
+    headers: alice,
+    payload: timed,
+  });
+  assert.equal(created.statusCode, 201);
+  const id = created.json().data.id as string;
+  const event = await app.collections.events.findOne({ _id: new ObjectId(id) });
+  assert.ok(event);
+  await app.collections.events.insertOne({
+    ...event,
+    _id: new ObjectId(),
+    title: "Inactive imported event",
+    startsAt: "2026-09-24T09:00:00.000Z",
+    endsAt: "2026-09-24T09:30:00.000Z",
+    source: "ics",
+    readonly: true,
+    importId: new ObjectId(),
+    externalId: undefined,
+    operationId: undefined,
+  });
+
+  const page = await app.inject({ url: "/events?limit=1", headers: alice });
+  assert.equal(page.statusCode, 200);
+  assert.deepEqual(
+    page.json().items.map((item: { id: string }) => item.id),
+    [id],
+  );
+  assert.equal(page.json().page.hasMore, false);
+  assert.equal(page.json().page.nextCursor, null);
+});
+
 test("a retry recovers the original response after a committed write", async () => {
   const app = await buildApp();
   const headers = { ...alice, "idempotency-key": "recover-after-write" };

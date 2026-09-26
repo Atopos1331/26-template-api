@@ -18,7 +18,6 @@ const VALID_WEEKDAYS = new Set<Weekday>([
 
 export type RecommendationRequest = {
   targetCourseId: string;
-  academicCareer?: string;
   excludedCourseIds: string[];
   minCredits?: number;
   maxCredits?: number;
@@ -47,7 +46,6 @@ export function normalizeRecommendationRequest(
   const body = object(input);
   const allowed = new Set([
     "targetCourseId",
-    "academicCareer",
     "excludedCourseIds",
     "minCredits",
     "maxCredits",
@@ -61,12 +59,6 @@ export function normalizeRecommendationRequest(
     if (!allowed.has(key)) invalid(key, "is not allowed");
   if (typeof body.targetCourseId !== "string" || !body.targetCourseId.trim())
     invalid("targetCourseId", "is required");
-  const academicCareer =
-    body.academicCareer === undefined
-      ? undefined
-      : typeof body.academicCareer === "string" && body.academicCareer.trim()
-        ? body.academicCareer.trim().toUpperCase()
-        : invalid("academicCareer", "must be a non-empty string");
   const minCredits =
     body.minCredits === undefined ? undefined : body.minCredits;
   const maxCredits =
@@ -133,7 +125,6 @@ export function normalizeRecommendationRequest(
     invalid("excludedCourseIds", "must contain unique course codes");
   return {
     targetCourseId: normalizeCourseCode(body.targetCourseId, "targetCourseId"),
-    ...(academicCareer === undefined ? {} : { academicCareer }),
     excludedCourseIds,
     ...(minCredits === undefined ? {} : { minCredits: minCredits as number }),
     ...(maxCredits === undefined ? {} : { maxCredits: maxCredits as number }),

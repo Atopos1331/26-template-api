@@ -40,6 +40,7 @@ export async function currentSelections(
     .find({
       ...key,
       bundleId: { $in: [...new Set(selections.map((row) => row.bundleId))] },
+      offeringId: section.offeringId,
       componentClassNbrs: String(section.classNbr),
     })
     .project({ bundleId: 1, offeringId: 1 })

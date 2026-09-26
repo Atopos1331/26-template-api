@@ -17,14 +17,12 @@ export function academicIdentity(
 ): { source: string; termCode: string } {
   const parts = id.split(":");
   if (
-    parts.length !== (kind === "offering" ? 4 : 5) ||
-    parts[0] !== ACADEMIC_SOURCE ||
-    !/^\d{2}(10|20|30|40)$/.test(parts[1] ?? "") ||
-    !/^[A-Z]{2,8}\d+[A-Z]?$/.test(parts[2] ?? "") ||
-    !/^[A-Za-z0-9_%.-]+$/.test(parts[3] ?? "") ||
-    (kind === "section" && !/^\d+$/.test(parts[4] ?? ""))
+    parts.length !== (kind === "offering" ? 2 : 3) ||
+    !/^\d{2}(10|20|30|40)$/.test(parts[0] ?? "") ||
+    !/^[A-Z]{2,8}\d+[A-Z]?$/.test(parts[1] ?? "") ||
+    (kind === "section" && !/^\d+$/.test(parts[2] ?? ""))
   ) {
     throw new AcademicError("invalid_request", 400, "Invalid academic ID");
   }
-  return { source: parts[0], termCode: parts[1] ?? "" };
+  return { source: ACADEMIC_SOURCE, termCode: parts[0] ?? "" };
 }

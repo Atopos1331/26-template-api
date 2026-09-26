@@ -37,7 +37,6 @@ function jobFilter(job: Document, owner: string) {
 function quotaState(row: Document | null) {
   const remaining = effectiveRemaining(row ?? {});
   return {
-    open: typeof row?.open === "boolean" ? row.open : null,
     remaining: remaining === null ? null : Math.max(0, remaining),
     waitlisted:
       typeof row?.waitlisted === "number" && Number.isFinite(row.waitlisted)
@@ -49,11 +48,7 @@ function quotaState(row: Document | null) {
 function quotaChange(
   previous: Document | null,
   current: Document,
-): "opened" | "closed" | "seats_available" | null {
-  const oldOpen = typeof previous?.open === "boolean" ? previous.open : null;
-  const newOpen = typeof current.open === "boolean" ? current.open : null;
-  if (oldOpen !== null && newOpen !== null && oldOpen !== newOpen)
-    return newOpen ? "opened" : "closed";
+): "seats_available" | null {
   const oldRemaining = effectiveRemaining(previous ?? {});
   const newRemaining = effectiveRemaining(current);
   const displayOldRemaining =

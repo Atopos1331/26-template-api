@@ -17,7 +17,6 @@ export type QuotaObservation = {
   remaining: number | null;
   waitlisted: number | null;
   reserveCapacity: number | null;
-  open: boolean | null;
   observedAt: string;
   source: string;
 };
@@ -88,7 +87,6 @@ export function parseUstQuota(
       (capacity !== null && enrolled !== null ? capacity - enrolled : null),
     waitlisted,
     reserveCapacity: null,
-    open: null,
     observedAt,
     source: ACADEMIC_SOURCE,
   };

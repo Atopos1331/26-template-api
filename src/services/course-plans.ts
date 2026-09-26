@@ -45,6 +45,7 @@ import {
 } from "../domain/auto-plan-token.js";
 import {
   type CalendarOccurrence,
+  type CalendarWindow,
   calendarWindow,
   detectConflicts,
 } from "../domain/calendar.js";
@@ -111,8 +112,13 @@ type QuotaDocument = Document & {
   observedAt?: string | null;
   capacity?: number | null;
   remaining?: number | null;
-  open?: boolean | null;
   waitlisted?: number | null;
+};
+
+type BlockingCalendar = {
+  window: CalendarWindow;
+  suppressed: Set<string>;
+  events: CalendarOccurrence[];
 };
 
 type FillerSchedule = {
@@ -142,12 +148,19 @@ function requestHash(value: unknown) {
 function encodeCursor(
   key: string,
   owner: string,
+  filters: string,
   updatedAt: string,
   id: ObjectId,
   issuedAt: number,
 ) {
   const encoded = Buffer.from(
-    JSON.stringify({ owner, updatedAt, id: id.toHexString(), issuedAt }),
+    JSON.stringify({
+      owner,
+      filters,
+      updatedAt,
+      id: id.toHexString(),
+      issuedAt,
+    }),
   ).toString("base64url");
   return `${encoded}.${hashSign(key, encoded)}`;
 }
@@ -156,6 +169,7 @@ function decodeCursor(
   key: string,
   token: string,
   owner: string,
+  filters: string,
   ttlSeconds: number,
   now: number,
 ) {
@@ -169,17 +183,19 @@ function decodeCursor(
   try {
     const value = JSON.parse(Buffer.from(encoded, "base64url").toString()) as {
       owner?: string;
+      filters?: string;
       updatedAt?: string;
       id?: string;
       issuedAt?: number;
     };
     if (
       value.owner !== owner ||
+      value.filters !== filters ||
       typeof value.updatedAt !== "string" ||
       typeof value.id !== "string" ||
       !Number.isSafeInteger(value.issuedAt) ||
       value.issuedAt! > now ||
-      value.issuedAt! + ttlSeconds * 1000 < now
+      value.issuedAt! + ttlSeconds * 1000 <= now
     )
       throw new Error("cursor mismatch");
     return { updatedAt: value.updatedAt, id: planId(value.id) };
@@ -209,34 +225,17 @@ function historicalQuotaSectionScore(
   const latestRemaining = effectiveRemaining(latest ?? {});
   const inconsistent = latestRemaining !== null && latestRemaining < 0;
   if (inconsistent) dataQuality.push("quota_inconsistent");
-  const open =
-    typeof latest?.open === "boolean"
-      ? latest.open
-      : typeof section.open === "boolean"
-        ? section.open
-        : null;
-  if (open === false)
-    return {
-      score: 0,
-      unknown: false,
-      inconsistent,
-      closed: true,
-      full: false,
-      dataQuality,
-    };
-  if (open === null) dataQuality.push("quota_unknown");
   const capacity =
     typeof latest?.capacity === "number" && latest.capacity > 0
       ? latest.capacity
       : null;
   const remaining =
     latestRemaining === null ? null : Math.max(0, latestRemaining);
-  if (open === null || capacity === null || remaining === null)
+  if (capacity === null || remaining === null)
     return {
       score: 50,
       unknown: true,
       inconsistent,
-      closed: false,
       full: false,
       dataQuality: [
         ...new Set([
@@ -321,7 +320,6 @@ function historicalQuotaSectionScore(
     score: Math.round(score * 100) / 100,
     unknown: false,
     inconsistent,
-    closed: false,
     full,
     dataQuality: [...new Set(dataQuality)],
   };
@@ -388,7 +386,6 @@ function historicalQuotaBundleScore(
     score: scores.length ? Math.min(...scores.map((value) => value.score)) : 50,
     unknown: scores.some((value) => value.unknown),
     inconsistent: scores.some((value) => value.inconsistent),
-    closed: scores.some((value) => value.closed),
     full: scores.some((value) => value.full),
     dataQuality: [...new Set(scores.flatMap((value) => value.dataQuality))],
   };
@@ -398,38 +395,17 @@ function quotaSectionScore(
   section: Document | undefined,
   quota: QuotaDocument | undefined,
 ) {
-  const open =
-    typeof quota?.open === "boolean"
-      ? quota.open
-      : typeof section?.open === "boolean"
-        ? section.open
-        : null;
   const remainingValue = effectiveRemaining(quota ?? {});
   const inconsistent = remainingValue !== null && remainingValue < 0;
   const dataQuality: string[] = [];
   if (inconsistent) dataQuality.push("quota_inconsistent");
-  if (open === false)
-    return {
-      score: 0,
-      unknown: false,
-      inconsistent,
-      closed: true,
-      full: false,
-      dataQuality,
-    };
-  if (open === null) dataQuality.push("quota_unknown");
   const remaining =
     remainingValue === null ? null : Math.max(0, remainingValue);
-  if (
-    open === null ||
-    !quota ||
-    (quota.capacity == null && quota.remaining == null)
-  )
+  if (!quota || (quota.capacity == null && quota.remaining == null))
     return {
       score: 50,
       unknown: true,
       inconsistent,
-      closed: false,
       full: false,
       dataQuality: [...new Set([...dataQuality, "quota_unknown"])],
     };
@@ -442,7 +418,6 @@ function quotaSectionScore(
       score: 50,
       unknown: true,
       inconsistent,
-      closed: false,
       full: false,
       dataQuality: [...new Set([...dataQuality, "quota_unknown"])],
     };
@@ -451,7 +426,6 @@ function quotaSectionScore(
       score: 0,
       unknown: false,
       inconsistent,
-      closed: false,
       full: true,
       dataQuality,
     };
@@ -459,7 +433,6 @@ function quotaSectionScore(
     score: Math.round(Math.max(0, Math.min(1, remaining / capacity)) * 100),
     unknown: false,
     inconsistent,
-    closed: false,
     full: false,
     dataQuality,
   };
@@ -799,11 +772,16 @@ export class CoursePlanService {
     },
   ) {
     const now = this.settings.now?.().getTime() ?? Date.now();
+    const filters = JSON.stringify({
+      termCode: options.termCode ?? null,
+      status: options.status ?? null,
+    });
     const after = options.cursor
       ? decodeCursor(
           this.settings.cursorKey,
           options.cursor,
           owner,
+          filters,
           this.settings.cursorTtlSeconds,
           now,
         )
@@ -833,6 +811,7 @@ export class CoursePlanService {
             ? encodeCursor(
                 this.settings.cursorKey,
                 owner,
+                filters,
                 last.updatedAt,
                 last._id,
                 now,
@@ -872,6 +851,41 @@ export class CoursePlanService {
       from: new Date(from.epochMilliseconds).toISOString(),
       to: new Date(to.epochMilliseconds).toISOString(),
     };
+    return this.conflictsWithBlockingCalendar(
+      canonicalBundles,
+      await this.loadBlockingCalendar(owner, window),
+    );
+  }
+
+  private async loadBlockingCalendar(
+    owner: string,
+    window: CalendarWindow,
+  ): Promise<BlockingCalendar> {
+    const [suppressedKeys, imported] = await Promise.all([
+      this.events.suppressedKeys(owner),
+      this.events.activeImportedEvents(owner),
+    ]);
+    const { expandManualEvent } = await import("../domain/calendar.js");
+    const events: CalendarOccurrence[] = [];
+    for await (const event of this.events.calendarCandidates(owner, window))
+      events.push(
+        ...expandManualEvent(event, window, 10000).filter(
+          (item) => item.blocksTime,
+        ),
+      );
+    events.push(
+      ...expandIcsSeries(imported, window, 10000).filter(
+        (item) => item.blocksTime,
+      ),
+    );
+    return { window, suppressed: new Set(suppressedKeys), events };
+  }
+
+  private conflictsWithBlockingCalendar(
+    canonicalBundles: CanonicalBundle[],
+    calendar: BlockingCalendar,
+  ) {
+    const termTimezone = this.settings.timezone;
     const projected: CalendarOccurrence[] = [];
     for (const canonical of canonicalBundles) {
       const expanded = expandCourseBundle(
@@ -882,37 +896,24 @@ export class CoursePlanService {
           meetings: bundleMeetings(canonical),
           termCode: canonical.termCode,
         },
-        window,
+        calendar.window,
         termTimezone,
       );
       projected.push(...expanded.items);
     }
-    const suppressed = new Set(await this.events.suppressedKeys(owner));
     const effectiveCourses = projected.filter(
-      (item) => !suppressed.has(item.calendarKey),
+      (item) => !calendar.suppressed.has(item.calendarKey),
     );
-    const expandEvent = (await import("../domain/calendar.js"))
-      .expandManualEvent;
-    const manualEvents: WithId<EventDocument>[] = [];
-    for await (const event of this.events.calendarCandidates(owner, window))
-      manualEvents.push(event);
-    for (const event of manualEvents) {
-      const expanded = expandEvent(event, window, 10000);
-      projected.push(...expanded.filter((item) => item.blocksTime));
-    }
-    const effectiveImports = await this.events.activeImportedEvents(owner);
-    projected.push(
-      ...expandIcsSeries(effectiveImports, window, 10000).filter(
-        (item) => item.blocksTime,
-      ),
+    if (!effectiveCourses.length) return [];
+    const courseKeys = new Set(
+      effectiveCourses.map((item) => item.calendarKey),
     );
     const result = detectConflicts(
-      [
-        ...effectiveCourses,
-        ...projected.filter((item) => ["manual", "ics"].includes(item.source)),
-      ],
+      [...effectiveCourses, ...calendar.events],
       termTimezone,
       10000,
+      (first, second) =>
+        courseKeys.has(first.calendarKey) || courseKeys.has(second.calendarKey),
     );
     return result.blocking;
   }
@@ -1145,7 +1146,6 @@ export class CoursePlanService {
     const offeringRows = await this.catalog.findOfferingsByCode(
       term,
       request.targetCourseId,
-      request.academicCareer,
     );
     if (!offeringRows.length) {
       if (!(await this.catalog.courseCodeExists(request.targetCourseId)))
@@ -1158,18 +1158,6 @@ export class CoursePlanService {
         meta: {},
       };
     }
-    const careers = new Set(
-      offeringRows.map((row) => row.offering.academicCareer),
-    );
-    if (request.academicCareer === undefined && careers.size > 1)
-      throw new PlanError(
-        "ambiguous_offering",
-        400,
-        "Course code maps to multiple academic careers",
-        {
-          academicCareer: "must be supplied for an ambiguous course offering",
-        },
-      );
     const targetCourseId = String(offeringRows[0]!.course.courseId);
     if (request.excludedCourseIds.includes(targetCourseId))
       return {
@@ -1244,7 +1232,6 @@ export class CoursePlanService {
         "remaining_pressure",
         "waitlist_pressure",
         "seat_trend",
-        "openness",
       ] as const;
       const difficulty = {
         version: "difficulty-v1" as const,
@@ -1294,7 +1281,6 @@ export class CoursePlanService {
           ? null
           : selectedCredits + credits;
       const reasons: string[] = [];
-      if (quota.closed) reasons.push("a required section is closed");
       if (!request.allowWaitlist && quota.full)
         reasons.push("a required section has no remaining seats");
       if (
@@ -1424,7 +1410,7 @@ export class CoursePlanService {
           quota.unknown
             ? "latest quota is incomplete"
             : quota.full
-              ? "a required section is full; waitlist is allowed"
+              ? "a required section has no remaining seats; full sections are allowed by policy"
               : "latest quota is available",
         ],
         dataQuality: [
@@ -1482,7 +1468,9 @@ export class CoursePlanService {
           stateRevision: number;
         } | null,
       };
-    const seedCodes = new Set(fill.courseCodes);
+    const seedCodes = new Set(
+      fill.courseCodes.filter((code) => !excludedCodes.has(code)),
+    );
     let commonCore: {
       catalogVersion: string;
       stateRevision: number;
@@ -1510,7 +1498,8 @@ export class CoursePlanService {
         catalogVersion: preset.catalogVersion,
         stateRevision: preset.stateRevision,
       };
-      for (const code of preset.courseCodes) seedCodes.add(code);
+      for (const code of preset.courseCodes)
+        if (!excludedCodes.has(code)) seedCodes.add(code);
     }
     for (const code of fill.courseCodes) {
       if (!(await this.catalog.courseCodeExists(code)))
@@ -1522,49 +1511,36 @@ export class CoursePlanService {
       courseCodes: [...seedCodes],
       subjects: fill.subjects,
       levels: fill.levels,
-      academicCareer: fill.academicCareer,
     });
-    const careers = new Map<string, Set<string>>();
-    for (const row of rows) {
-      const code = canonicalCourseCode({
-        course: row.course,
-      } as CanonicalBundle);
-      if (excludedCodes.has(code)) continue;
-      const set = careers.get(code) ?? new Set<string>();
-      set.add(String(row.offering.academicCareer ?? ""));
-      careers.set(code, set);
-    }
-    if (careers.size > 40)
+    const offeredCodes = new Set(
+      rows
+        .filter(
+          (row) =>
+            !excludedCodes.has(
+              canonicalCourseCode({ course: row.course } as CanonicalBundle),
+            ),
+        )
+        .map((row) =>
+          canonicalCourseCode({ course: row.course } as CanonicalBundle),
+        ),
+    );
+    if (offeredCodes.size > 40)
       throw new PlanError(
         "candidate_pool_too_large",
         400,
         "Filler pool exceeds 40 distinct courses",
       );
-    if (!fill.academicCareer) {
-      const ambiguous = [...careers.entries()]
-        .filter(([, values]) => values.size > 1)
-        .map(([code]) => code)
-        .sort();
-      if (ambiguous.length)
-        throw new PlanError(
-          "ambiguous_offering",
-          400,
-          "Filler course code maps to multiple academic careers",
-          { courseCodes: ambiguous.slice(0, 20).join(",") },
-        );
-    }
     const canonicals: CanonicalBundle[] = [];
-    const offeredCodes = new Set(
-      rows.map((row) =>
-        canonicalCourseCode({ course: row.course } as CanonicalBundle),
-      ),
-    );
     const diagnostics = fill.courseCodes
-      .filter((code) => !offeredCodes.has(code))
+      .filter((code) => !excludedCodes.has(code) && !offeredCodes.has(code))
       .map((code) => `${code} is not offered in ${term.termCode}`);
-    const seenCourses = new Set<string>();
     for (const row of rows) {
-      if (seenCourses.has(String(row.course.courseId))) continue;
+      if (
+        excludedCodes.has(
+          canonicalCourseCode({ course: row.course } as CanonicalBundle),
+        )
+      )
+        continue;
       if (
         fill.minCredits !== undefined &&
         (typeof row.course.credits !== "number" ||
@@ -1581,15 +1557,14 @@ export class CoursePlanService {
         term,
         String(row.offering.offeringId),
       );
-      for (const bundle of bundles) {
-        const canonical = await this.catalog.resolveBundle(
+      canonicals.push(
+        ...(await this.catalog.resolveBundles(
           term,
-          String(bundle.offeringId),
-          String(bundle.bundleId),
-        );
-        canonicals.push(canonical);
-      }
-      seenCourses.add(String(row.course.courseId));
+          row.course,
+          row.offering,
+          bundles,
+        )),
+      );
     }
     return { canonicals, diagnostics, commonCore };
   }
@@ -1664,7 +1639,15 @@ export class CoursePlanService {
       );
     const canonicalById = new Map<string, CanonicalBundle>();
     const sectionIds: string[] = [];
-    const diagnostics: Array<{ code: string; message: string }> = [];
+    // `courseCode` is carried alongside the message so a caller can group
+    // diagnostics by course without parsing prose. One entry is emitted per
+    // rejected candidate bundle, so a course with several unusable sections
+    // legitimately produces several entries.
+    const diagnostics: Array<{
+      code: string;
+      message: string;
+      courseCode?: string;
+    }> = [];
     const rawCandidates: Array<{
       canonical: CanonicalBundle;
       course: (typeof requested)[number];
@@ -1673,7 +1656,6 @@ export class CoursePlanService {
       const rows = await this.catalog.findOfferingsByCode(
         term,
         course.courseCode,
-        course.academicCareer,
       );
       if (!rows.length) {
         if (!(await this.catalog.courseCodeExists(course.courseCode)))
@@ -1685,30 +1667,22 @@ export class CoursePlanService {
         diagnostics.push({
           code: "course_not_offered",
           message: `${course.courseCode} is valid but not offered in ${document.termCode}`,
+          courseCode: course.courseCode,
         });
         continue;
       }
-      if (
-        course.academicCareer === undefined &&
-        new Set(rows.map((row) => row.offering.academicCareer)).size > 1
-      )
-        throw new PlanError(
-          "ambiguous_offering",
-          400,
-          "Course code maps to multiple academic careers",
-        );
       const rawCandidateCount = rawCandidates.length;
       for (const row of rows) {
         const bundles = await this.catalog.bundlesForOffering(
           term,
           String(row.offering.offeringId),
         );
-        for (const bundle of bundles) {
+        const eligibleBundles = bundles.filter((bundle) => {
           if (
             course.lockedBundleId &&
             course.lockedBundleId !== bundle.bundleId
           )
-            continue;
+            return false;
           const bundleSections = new Set(
             (bundle.componentClassNbrs ?? []).flatMap((classNbr: string) => [
               classNbr,
@@ -1720,24 +1694,26 @@ export class CoursePlanService {
               (sectionId) => !bundleSections.has(sectionId),
             )
           )
-            continue;
+            return false;
           if (
             course.excludedSectionIds.some((sectionId) =>
               bundleSections.has(sectionId),
             )
           )
-            continue;
-          const canonical = await this.catalog.resolveBundle(
-            term,
-            String(bundle.offeringId),
-            String(bundle.bundleId),
-          );
-          const id = String(bundle.bundleId);
+            return false;
+          return true;
+        });
+        const canonicals = await this.catalog.resolveBundles(
+          term,
+          row.course,
+          row.offering,
+          eligibleBundles,
+        );
+        for (const canonical of canonicals) {
+          const id = String(canonical.bundle.bundleId);
           canonicalById.set(id, canonical);
           sectionIds.push(
-            ...(bundle.componentClassNbrs ?? []).map(
-              (classNbr: string) => `${bundle.offeringId}:${classNbr}`,
-            ),
+            ...canonical.sections.map((section) => String(section.sectionId)),
           );
           rawCandidates.push({ canonical, course });
         }
@@ -1749,6 +1725,7 @@ export class CoursePlanService {
         diagnostics.push({
           code: "lock_conflict",
           message: `${course.courseCode} has no active bundle satisfying its lock`,
+          courseCode: course.courseCode,
         });
     }
 
@@ -1802,9 +1779,12 @@ export class CoursePlanService {
     }
     const candidateSchedules = new Map<string, CandidateSchedule>();
     const candidates: SolverCandidate[] = [];
-    const suppressedCalendarKeys = new Set(
-      await this.events.suppressedKeys(owner),
-    );
+    const blockingCalendar = horizon
+      ? await this.loadBlockingCalendar(owner, horizon.window)
+      : null;
+    const suppressedCalendarKeys =
+      blockingCalendar?.suppressed ??
+      new Set(await this.events.suppressedKeys(owner));
     let occurrenceCount = 0;
     for (const { canonical, course } of rawCandidates) {
       const id = String(canonical.bundle.bundleId);
@@ -1816,17 +1796,42 @@ export class CoursePlanService {
         diagnostics.push({
           code: "unknown_credits",
           message: `${course.courseCode} has no known credits for the requested credit bound`,
+          courseCode: course.courseCode,
         });
         continue;
       }
-      if (
-        quota.closed ||
-        (!request.allowFullWaitlist && quota.full) ||
-        (request.unknownQuotaPolicy === "exclude" && quota.unknown)
-      ) {
+      // Rejections are recorded per candidate bundle, not per course. A course
+      // keeps every bundle that survives, so a course can be rejected here and
+      // still appear in the generated options. Naming the bundle and the
+      // reason is what makes that legible: the earlier single message
+      // ("<course> has no eligible section bundle") read as though the whole
+      // course were unavailable, and it was emitted once per dropped bundle.
+      // `bundle` is an untyped Mongo document, so the labels are widened to
+      // unknown before being narrowed.
+      const labelValues: unknown[] = Array.isArray(
+        canonical.bundle.sectionLabels,
+      )
+        ? canonical.bundle.sectionLabels
+        : [];
+      const labels = labelValues
+        .filter((label): label is string => typeof label === "string")
+        .join(" + ");
+      const describe = labels
+        ? `${course.courseCode} ${labels}`
+        : course.courseCode;
+      if (!request.allowFullWaitlist && quota.full) {
         diagnostics.push({
-          code: "section_unavailable",
-          message: `${course.courseCode} has no eligible section bundle`,
+          code: "bundle_full",
+          message: `${describe} skipped: a section has no remaining seats`,
+          courseCode: course.courseCode,
+        });
+        continue;
+      }
+      if (request.unknownQuotaPolicy === "exclude" && quota.unknown) {
+        diagnostics.push({
+          code: "quota_unknown",
+          message: `${describe} skipped: no quota observation and unknown quota is excluded`,
+          courseCode: course.courseCode,
         });
         continue;
       }
@@ -1868,10 +1873,15 @@ export class CoursePlanService {
             ? "hard_time_constraint"
             : "hard_schedule_constraint",
           message: `${course.courseCode}: ${temporalViolation ?? aggregateViolation}`,
+          courseCode: course.courseCode,
         });
         continue;
       }
-      if ((await this.blockingConflicts(owner, [canonical])).length) continue;
+      if (
+        blockingCalendar &&
+        this.conflictsWithBlockingCalendar([canonical], blockingCalendar).length
+      )
+        continue;
       const candidate: SolverCandidate = {
         id,
         courseCode: course.courseCode,
@@ -1905,7 +1915,6 @@ export class CoursePlanService {
       const id = String(canonical.bundle.bundleId);
       const quota = historicalQuotaBundleScore(canonical, quotas, quotaHistory);
       if (
-        quota.closed ||
         (!request.allowFullWaitlist && quota.full) ||
         (request.unknownQuotaPolicy === "exclude" && quota.unknown)
       )
@@ -1938,7 +1947,11 @@ export class CoursePlanService {
         violatesAggregateConstraints(metrics, request.constraints, horizon)
       )
         continue;
-      if ((await this.blockingConflicts(owner, [canonical])).length) continue;
+      if (
+        blockingCalendar &&
+        this.conflictsWithBlockingCalendar([canonical], blockingCalendar).length
+      )
+        continue;
       fillerSchedules.set(id, {
         canonical,
         metrics,
@@ -2074,6 +2087,8 @@ export class CoursePlanService {
             minDesiredPriority: selectedPriority,
           }
         : {};
+    const blockedAssignments: NonNullable<SolverInput["blockedAssignments"]> =
+      [];
     while (
       rawOptions.length < request.resultLimit &&
       searchStatus === "completed"
@@ -2089,15 +2104,13 @@ export class CoursePlanService {
               previous.selectedIds.includes(candidate.id),
           )?.id ?? null;
       }
+      blockedAssignments.push(assignment);
       let next: SolverResult;
       try {
         next = await solve({
           ...solverInput,
           ...coverageFloors,
-          blockedAssignments: [
-            ...(solverInput.blockedAssignments ?? []),
-            assignment,
-          ],
+          blockedAssignments,
         });
       } catch (error) {
         if (error instanceof AutoPlanSolverBusyError)
@@ -3163,15 +3176,6 @@ export class CoursePlanService {
           );
         continue;
       }
-      if (
-        course.academicCareer !== undefined &&
-        item.offering.academicCareer !== course.academicCareer
-      )
-        throw new PlanError(
-          "stale_recommendation",
-          409,
-          "A course offering career changed",
-        );
     }
     for (const group of normalized.groups) {
       const count = group.courseCodes.filter((courseCode) =>
@@ -3332,12 +3336,6 @@ export class CoursePlanService {
         .flatMap((item) => item.sections)
         .find((item) => item.sectionId === sectionId);
       const quotaStatus = quotaSectionScore(section, quota);
-      if (quotaStatus.closed)
-        throw new PlanError(
-          "stale_recommendation",
-          409,
-          "A selected section is closed",
-        );
       if (
         !normalized.allowFullWaitlist &&
         !quotaStatus.unknown &&

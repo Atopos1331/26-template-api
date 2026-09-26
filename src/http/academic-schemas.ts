@@ -47,7 +47,6 @@ export const CourseSummarySchema = Type.Object({
   courseCode: Type.String(),
   title: Type.String(),
   credits: Type.Union([Type.Number(), Type.Null()]),
-  academicCareer: Type.String(),
   sectionCount: Type.Number(),
   latestUpdatedAt: Type.Union([Type.String(), Type.Null()]),
   freshness: FreshnessSchema,
@@ -57,7 +56,6 @@ export const OfferingSchema = Type.Object(
     offeringId: Type.String(),
     termCode: Type.String(),
     courseId: Type.String(),
-    academicCareer: Type.String(),
     bundleAvailability: Type.Union([
       Type.Literal("available"),
       Type.Literal("unverified_binding"),
@@ -111,7 +109,6 @@ export const QuotaSchema = Type.Object(
     remaining: Type.Union([Type.Number(), Type.Null()]),
     waitlisted: Type.Union([Type.Number(), Type.Null()]),
     reserveCapacity: Type.Union([Type.Number(), Type.Null()]),
-    open: Type.Union([Type.Boolean(), Type.Null()]),
     observedAt: Type.Union([Type.String(), Type.Null()]),
   },
   { additionalProperties: true },

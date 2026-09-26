@@ -9,7 +9,6 @@ const base = {
   sectionId: "s1",
   capacity: 100,
   enrolled: 100,
-  open: true,
 };
 
 test("quota trend is deterministic, clamps negative remaining, and reports waitlist slope", () => {
@@ -135,7 +134,6 @@ test("difficulty renormalizes known components and stays null without data", () 
       capacity: 100,
       remaining: 0,
       waitlisted: 20,
-      open: false,
       observedAt: "2026-09-23T00:00:00.000Z",
     },
     { ...calculateQuotaTrend([], "14d"), remainingSlopePerDay: null },

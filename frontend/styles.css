@@ -1,0 +1,2049 @@
+/* ==========================================================================
+   USThing timetable — console stylesheet
+
+   A bespoke design system for this workspace. Deliberately not a landing-page
+   aesthetic: this is a dense, task-driven tool, so the rules below optimise for
+   scanability, predictable hit targets, and vertical rhythm over decoration.
+
+   Layer order:
+     1. tokens        2. reset        3. layout shell
+     4. typography    5. controls     6. composites
+     7. states        8. responsive   9. motion / print
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. TOKENS
+   -------------------------------------------------------------------------- */
+
+:root {
+  /* Neutrals lean faintly green so the accent reads as part of the family.
+     `--line` on `--surface` and `--ink` on `--bg` both clear WCAG AA. */
+  --bg: #f7f9f8;
+  --surface: #ffffff;
+  --surface-2: #f1f5f4;
+  --surface-3: #e8efed;
+  --line: #dce4e2;
+  --line-strong: #c3d0cd;
+  --ink: #121a19;
+  --ink-2: #33403e;
+  --muted: #5c6a67;
+  --faint: #849390;
+
+  /* Exactly one accent. --accent-700 is the text-on-white variant (4.5:1+). */
+  --accent: #0f766e;
+  --accent-700: #0b5d57;
+  --accent-300: #7cc9bf;
+  --accent-soft: #e6f3f1;
+
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+  --warning: #8a5a06;
+  --warning-soft: #fdf4e3;
+  --success: #0f766e;
+  --success-soft: #e6f3f1;
+  --info: #2c5c9e;
+  --info-soft: #eaf1fb;
+
+  /* Type: system stack on purpose. This tool is offline-first and should never
+     depend on a font request. No webfont. */
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+
+  --fs-meta: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 19px;
+  --fs-2xl: 24px;
+  --fs-3xl: 30px;
+
+  --lh-tight: 1.2;
+  --lh-snug: 1.35;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.65;
+
+  /* 4px grid. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* One radius family: controls 6, containers 10, chips 999. */
+  --r-control: 6px;
+  --r-card: 10px;
+  --r-chip: 999px;
+
+  --shadow-xs: 0 1px 2px rgb(18 26 25 / 0.05);
+  --shadow-sm: 0 1px 3px rgb(18 26 25 / 0.07), 0 1px 2px rgb(18 26 25 / 0.04);
+  --shadow-md: 0 8px 24px rgb(18 26 25 / 0.1);
+  --shadow-lg: 0 16px 48px rgb(18 26 25 / 0.16);
+
+  --ring: 0 0 0 3px rgb(15 118 110 / 0.25);
+  --masthead-h: 56px;
+  --content-max: 1360px;
+  --speed: 140ms;
+}
+
+/* --------------------------------------------------------------------------
+   2. RESET
+   -------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  min-width: 320px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* One focus treatment for every interactive element. */
+:where(button, input, select, textarea, a, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-control);
+}
+
+a {
+  color: var(--accent-700);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+pre {
+  margin: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* Respect the OS setting rather than animating regardless. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   3. LAYOUT SHELL
+   -------------------------------------------------------------------------- */
+
+/* --- Masthead: brand and tabs on one row, connection on its own --------- */
+
+.masthead {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.masthead-inner {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0 auto;
+  max-width: var(--content-max);
+  min-height: var(--masthead-h);
+  padding: 0 var(--sp-6);
+}
+
+.brand {
+  align-items: center;
+  color: var(--ink);
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--sp-3);
+  text-decoration: none;
+}
+
+.brand:hover {
+  text-decoration: none;
+}
+
+.brand-mark {
+  align-items: center;
+  background: var(--accent);
+  border-radius: var(--r-control);
+  color: #fff;
+  display: inline-flex;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  height: 32px;
+  justify-content: center;
+  letter-spacing: -0.02em;
+  width: 32px;
+}
+
+.brand-text {
+  display: grid;
+  line-height: 1.15;
+}
+
+.brand-text strong {
+  font-size: var(--fs-md);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.brand-text small {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
+/* The section tabs sit inline next to the wordmark, not on their own band
+   below it: two stacked header strips read as a layout accident. */
+.tabs {
+  align-items: stretch;
+  align-self: stretch;
+  display: flex;
+  flex: 1 1 auto;
+  gap: var(--sp-1);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: var(--fs-base);
+  font-weight: 550;
+  min-height: var(--masthead-h);
+  padding: 0 var(--sp-3);
+  transition:
+    color var(--speed) ease,
+    border-color var(--speed) ease;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent-700);
+  font-weight: 650;
+}
+
+/* --- Connection controls: collapsed behind a status chip ---------------- */
+
+.connection {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.connection-fields {
+  align-items: end;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  position: absolute;
+  right: var(--sp-6);
+  top: calc(100% - var(--sp-2));
+  z-index: 50;
+}
+
+/* Keep the open panel inside the viewport on narrow screens. */
+@media (max-width: 900px) {
+  .connection-fields {
+    left: var(--sp-4);
+    right: var(--sp-4);
+  }
+}
+
+.connection:not([open]) .connection-fields {
+  display: none;
+}
+
+.connection-summary {
+  align-items: center;
+  border-radius: var(--r-control);
+  cursor: pointer;
+  display: inline-flex;
+  gap: var(--sp-2);
+  list-style: none;
+  padding: var(--sp-1) var(--sp-2);
+}
+
+.connection-summary::-webkit-details-marker {
+  display: none;
+}
+
+.connection-summary:hover {
+  background: var(--surface-2);
+}
+
+.connection-summary-label {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: 550;
+}
+
+.connection label {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.field > span,
+.connection label > span,
+.field-label {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.tab-count {
+  background: var(--surface-3);
+  border-radius: var(--r-chip);
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  margin-left: var(--sp-1);
+  padding: 1px 6px;
+}
+
+.tab.active .tab-count {
+  background: var(--accent-soft);
+  color: var(--accent-700);
+}
+
+/* --- Page + panels ------------------------------------------------------- */
+
+.page {
+  margin: 0 auto;
+  max-width: var(--content-max);
+  padding: var(--sp-6);
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+/* The plan context strip. Flows with the page rather than sticking: the active
+   plan rarely changes mid-task, and a pinned bar costs 84px of a 1000px
+   viewport for the whole session. */
+.context-bar {
+  align-items: end;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3) var(--sp-6);
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-4) var(--sp-5);
+}
+
+.context-bar .field {
+  flex: 0 1 280px;
+}
+
+/* The summary arrives as one string from the app layer:
+   "Fall timetable · draft · revision 3 · 2 items". Splitting it on the middle
+   dot renders each fact as its own metric instead of a run-on sentence —
+   without needing the caller to emit markup. Bottom-aligned so the metric
+   baseline lines up with the bottom of the plan select beside it. */
+.context-bar-note {
+  color: var(--muted);
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  gap: var(--sp-2) var(--sp-6);
+  line-height: var(--lh-snug);
+  margin: 0;
+  min-width: 0;
+}
+
+.context-bar-note:empty {
+  display: none;
+}
+
+.context-metric {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.context-metric > strong {
+  color: var(--ink);
+  font-size: var(--fs-base);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.context-metric > span {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* "draft" / "active" / "archived" as a chip rather than a bare word. */
+.metric-chip {
+  background: var(--surface-3);
+  border-radius: var(--r-chip);
+  color: var(--ink-2);
+  font-size: var(--fs-meta);
+  font-weight: 620;
+  padding: 1px var(--sp-2);
+  text-transform: capitalize;
+}
+
+.metric-chip[data-status="active"] {
+  background: var(--accent-soft);
+  color: var(--accent-700);
+}
+
+.metric-chip[data-status="archived"] {
+  background: var(--surface-3);
+  color: var(--muted);
+}
+
+.context-bar-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--sp-2);
+}
+
+/* --- Headings ------------------------------------------------------------ */
+
+.page-heading {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  justify-content: space-between;
+  margin-bottom: var(--sp-5);
+}
+
+.page-heading h1 {
+  font-size: var(--fs-2xl);
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  line-height: var(--lh-tight);
+}
+
+.page-heading .lede {
+  color: var(--muted);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  margin: var(--sp-2) 0 0;
+  max-width: 68ch;
+}
+
+.eyebrow {
+  color: var(--accent-700);
+  font-size: var(--fs-meta);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 0 0 var(--sp-2);
+  text-transform: uppercase;
+}
+
+/* Panels keep their own headings flat: the eyebrow is reserved for the page. */
+.section-title h2 {
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+}
+
+h3 {
+  font-size: var(--fs-md);
+  font-weight: 650;
+  line-height: var(--lh-tight);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  margin: var(--sp-2) 0 0;
+  max-width: 72ch;
+}
+
+.small-note {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  margin: 0;
+}
+
+.count,
+.code {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.code {
+  font-family: var(--font-mono);
+  max-width: 62%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   5. CONTROLS
+   -------------------------------------------------------------------------- */
+
+/* --- Buttons ------------------------------------------------------------- */
+
+.button {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  display: inline-flex;
+  font-size: var(--fs-sm);
+  font-weight: 620;
+  gap: var(--sp-2);
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 var(--sp-3);
+  transition:
+    background var(--speed) ease,
+    border-color var(--speed) ease,
+    transform var(--speed) ease;
+  white-space: nowrap;
+}
+
+.button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.button.primary:hover:not(:disabled) {
+  background: var(--accent-700);
+}
+
+.button.secondary {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--ink-2);
+}
+
+.button.secondary:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--muted);
+}
+
+.button.quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--accent-700);
+}
+
+.button.quiet:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.button.small {
+  font-size: var(--fs-meta);
+  min-height: 28px;
+  padding: 0 var(--sp-2);
+}
+
+.button:disabled,
+.link-button:disabled,
+.shortcut:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.button[aria-busy] {
+  cursor: progress;
+}
+
+.button[aria-busy]::after {
+  animation: spin 0.7s linear infinite;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  border-right-color: transparent;
+  content: "";
+  display: inline-block;
+  height: 11px;
+  width: 11px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.link-button {
+  background: transparent;
+  border: 0;
+  color: var(--accent-700);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  padding: var(--sp-1) 0;
+}
+
+.link-button:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link-button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.danger-link {
+  color: var(--danger);
+}
+
+/* A "try this" affordance, not a primary action. */
+.shortcut {
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  border-radius: var(--r-chip);
+  color: var(--accent-700);
+  font-size: var(--fs-sm);
+  font-weight: 620;
+  min-height: 30px;
+  padding: 0 var(--sp-3);
+  white-space: nowrap;
+}
+
+.shortcut:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.button-row,
+.form-actions,
+.context-bar-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* --- Fields -------------------------------------------------------------- */
+
+/* Grid, not flex: labels get their own row and inputs line up across a row
+   regardless of label length. This is what the old equal-column layout got
+   wrong — a long label could not push its neighbours around. */
+.form-grid {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.form-grid.two {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.form-grid.three {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.form-grid.four {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.form-grid.five {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.field {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.field input,
+.field select,
+.field textarea,
+.connection input,
+.connection select {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  color: var(--ink);
+  font-size: var(--fs-base);
+  min-height: 36px;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  transition:
+    border-color var(--speed) ease,
+    box-shadow var(--speed) ease;
+  width: 100%;
+}
+
+.field input:hover:not(:disabled),
+.field select:hover:not(:disabled),
+.field textarea:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus,
+.connection input:focus,
+.connection select:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+  outline: none;
+}
+
+.field input:disabled,
+.field select:disabled,
+.field textarea:disabled {
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.field input::placeholder,
+.field textarea::placeholder {
+  color: var(--faint);
+}
+
+.field textarea {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-relaxed);
+  min-height: 84px;
+  resize: vertical;
+}
+
+/* JSON-ish inputs read better monospaced. */
+.field textarea[name*="json"],
+.field textarea[id*="weights"],
+.field textarea[id*="extra"],
+.field textarea[id*="fill"],
+.field textarea[id*="protected"],
+.field textarea[id*="preferred"],
+.field textarea[id*="unavailable"],
+.api-explorer textarea,
+.ics-tools textarea {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-snug);
+}
+
+/* Field groups inside a panel: hairline separated, no nested cards. */
+.field-group {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: var(--sp-4);
+  padding-top: var(--sp-4);
+}
+
+.field-group:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.field-group-title {
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+/* --- Checkboxes / radios ------------------------------------------------- */
+
+.checkbox-line,
+.checkbox-field > label {
+  align-items: center;
+  color: var(--ink-2);
+  display: flex;
+  font-size: var(--fs-base);
+  gap: var(--sp-2);
+  line-height: var(--lh-snug);
+}
+
+.checkbox-field {
+  align-content: end;
+  display: grid;
+  gap: var(--sp-1);
+}
+
+/* Indeterminate-looking native inputs are fine here; keep them visible and
+   sized for touch. */
+.checkbox-line input[type="checkbox"],
+.checkbox-field input[type="checkbox"],
+.day-checks input[type="checkbox"],
+.weekly-fields input[type="checkbox"] {
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+  height: 15px;
+  margin: 0;
+  width: 15px;
+}
+
+.day-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+}
+
+.day-checks label,
+.weekly-fields label {
+  align-items: center;
+  color: var(--ink-2);
+  display: inline-flex;
+  font-size: var(--fs-sm);
+  gap: var(--sp-2);
+  white-space: nowrap;
+}
+
+.weekly-fields {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3) var(--sp-4);
+}
+
+.until-field {
+  max-width: 170px;
+}
+
+/* --------------------------------------------------------------------------
+   6. COMPOSITES
+   -------------------------------------------------------------------------- */
+
+/* --- Panels -------------------------------------------------------------- */
+
+/* Containers earn a border; they do not earn a shadow. Only overlays float. */
+.panel,
+.results-pane,
+.detail-pane,
+.form-section,
+.result-block,
+.toolbar,
+.advanced-api {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  min-width: 0;
+}
+
+.panel,
+.results-pane,
+.detail-pane,
+.form-section {
+  display: grid;
+  align-content: start;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+}
+
+.section-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  justify-content: space-between;
+  padding-bottom: var(--sp-3);
+}
+
+/* Old markup used a title inside a bordered header row; keep it tidy without
+   the double rule that made every card look boxed-in. */
+.section-title:not(:last-child) {
+  border-bottom: 1px solid var(--line);
+}
+
+.section-title > * {
+  min-width: 0;
+}
+
+.section-note {
+  color: var(--muted);
+  flex: 1 1 100%;
+  font-size: var(--fs-meta);
+  line-height: var(--lh-snug);
+  margin: 0;
+}
+
+.badge {
+  background: var(--surface-3);
+  border-radius: var(--r-chip);
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  padding: 2px var(--sp-2);
+  white-space: nowrap;
+}
+
+.badge.accent {
+  background: var(--accent-soft);
+  color: var(--accent-700);
+}
+
+/* --- Page-level grid arrangements --------------------------------------- */
+
+/* Search results and their detail: results narrow, detail wide. Collapses to a
+   single column well before the text gets cramped. */
+.split-view {
+  display: grid;
+  gap: var(--sp-5);
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+}
+
+/* Panels that hold independent forms. Single column by default — a 400px
+   minimum track would itself overflow a phone viewport — and two or more
+   columns once there is room. The generous min track stops cards from getting
+   so narrow that their labels wrap into columns. */
+.panel-grid {
+  display: grid;
+  gap: var(--sp-5);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 768px) {
+  .panel-grid {
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  }
+}
+
+/* Cards in a row keep their own height instead of stretching to the tallest
+   sibling, which is what left the old layout full of dead space. */
+.panel-grid,
+.planning-grid,
+.tool-grid {
+  align-items: start;
+}
+
+.planning-grid,
+.tool-grid {
+  display: grid;
+  gap: var(--sp-5);
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+.stack {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.stack > * {
+  min-width: 0;
+}
+
+.section-spaced,
+.secondary-tools,
+.ics-tools,
+.api-explorer {
+  margin-top: var(--sp-5);
+}
+
+/* --- Lists --------------------------------------------------------------- */
+
+.list,
+.bundle-list,
+.section-list,
+.calendar-list {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* Row shell shared by course/section/bundle/event/calendar rows. */
+.course-row,
+.section-row,
+.bundle-row,
+.event-row,
+.calendar-row {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+  min-width: 0;
+  padding: var(--sp-3);
+  text-align: left;
+  width: 100%;
+}
+
+.course-row:hover,
+.section-row:hover,
+.bundle-row:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.course-row > span:first-child,
+.section-row > span:first-child,
+.bundle-row > span:first-child,
+.event-row > div,
+.calendar-row > div {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.course-row strong,
+.section-row strong,
+.bundle-row strong,
+.event-row strong,
+.calendar-row strong {
+  font-size: var(--fs-base);
+  font-weight: 620;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.course-row small,
+.section-row small,
+.bundle-row small,
+.event-row small,
+.calendar-row small {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.course-meta,
+.seat,
+.arrow,
+.score {
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.seat {
+  color: var(--accent-700);
+  font-weight: 600;
+}
+
+/* --- Week timetable (Schedule) ------------------------------------------ */
+
+/* Grouped-by-day agenda. Reads top-to-bottom like a paper timetable, which is
+   what students actually plan against. */
+.week-grid {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.week-day {
+  display: grid;
+  gap: var(--sp-2);
+  grid-template-columns: 92px minmax(0, 1fr);
+}
+
+.week-day-label {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  padding-top: var(--sp-2);
+  text-transform: uppercase;
+}
+
+.week-day-label strong {
+  color: var(--ink);
+  display: block;
+  font-size: var(--fs-lg);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.week-day.is-today .week-day-label strong {
+  color: var(--accent-700);
+}
+
+.week-day-items {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.agenda-item {
+  align-items: baseline;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-control);
+  display: grid;
+  gap: var(--sp-1) var(--sp-3);
+  grid-template-columns: 96px minmax(0, 1fr);
+  padding: var(--sp-3);
+}
+
+.agenda-item time {
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.agenda-item strong {
+  font-size: var(--fs-base);
+  font-weight: 620;
+}
+
+.agenda-item small {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  grid-column: 2;
+}
+
+.agenda-item.is-all-day time {
+  color: var(--muted);
+  font-family: var(--font-sans);
+}
+
+/* Event-type accents reuse the single accent plus neutrals, not a rainbow. */
+.agenda-item[data-kind="class"] {
+  border-left-color: var(--accent);
+}
+.agenda-item[data-kind="exam"],
+.agenda-item[data-kind="deadline"] {
+  border-left-color: var(--danger);
+}
+.agenda-item[data-kind="other"],
+.agenda-item[data-kind="reminder"] {
+  border-left-color: var(--line-strong);
+}
+
+.agenda-empty {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) 0;
+}
+
+/* --- Table-ish rows ------------------------------------------------------ */
+
+.item-row,
+.plan-item {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+  padding: var(--sp-3) 0;
+}
+
+.item-row:first-child,
+.plan-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.item-row > div:first-child,
+.plan-item > div:first-child {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+/* The plan editor row puts a select, a note field, a colour pair, and two
+   actions on one line. Only the note grows; everything else keeps its natural
+   size, otherwise the inputs stretch and collide. */
+.plan-item > div:first-child {
+  flex: 1 1 200px;
+}
+
+.plan-item > div:first-child .badge {
+  justify-self: start;
+}
+
+.plan-item-actions input[type="text"] {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  flex: 1 1 140px;
+  min-height: 30px;
+  min-width: 0;
+  padding: 0 var(--sp-2);
+  width: auto;
+}
+
+.plan-item-actions select {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+  min-height: 30px;
+  padding: 0 var(--sp-1);
+}
+
+.plan-item-actions input[type="color"] {
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-control);
+  cursor: pointer;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 2px;
+  width: 34px;
+}
+
+.plan-item-actions input[type="checkbox"] {
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+  height: 15px;
+  margin: 0;
+  width: 15px;
+}
+
+.item-row strong,
+.plan-item strong {
+  font-size: var(--fs-base);
+  font-weight: 620;
+}
+
+.item-row small,
+.plan-item small {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+/* Quota readout: one chip per component type (LEC / TUT / LAB), plus a chip
+   when sections are full or have an unknown seat count. */
+.quota-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+.quota-chip {
+  align-items: baseline;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-chip);
+  color: var(--ink-2);
+  display: inline-flex;
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  gap: var(--sp-1);
+  padding: 1px var(--sp-2);
+  white-space: nowrap;
+}
+
+.quota-chip > b {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.quota-chip > i {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.quota-chip.is-full {
+  background: var(--danger-soft);
+  border-color: #f0b4ae;
+  color: var(--danger);
+}
+
+.quota-chip.is-muted {
+  color: var(--muted);
+}
+
+.plan-items {
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-4);
+}
+
+.plan-items .section-title {
+  border-bottom: 0;
+  margin-bottom: var(--sp-1);
+  padding-bottom: 0;
+}
+
+.plan-item-actions,
+.row-actions,
+.event-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+
+/* Below this width the status select, note field, colour pair, and two actions
+   cannot share one line: the row would push the whole page wider than the
+   viewport. Stack the course identity above its controls and give the note
+   field a full row of its own. */
+@media (max-width: 720px) {
+  .plan-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .plan-item-actions {
+    justify-content: flex-start;
+  }
+
+  .plan-item-actions input[type="text"] {
+    flex: 1 1 100%;
+  }
+}
+
+.section-actions {
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+
+.section-row > span:first-child {
+  flex: 1 1 200px;
+}
+
+/* --- Calendar row -------------------------------------------------------- */
+
+.calendar-list {
+  max-height: 560px;
+  overflow: auto;
+}
+
+.calendar-row {
+  justify-content: flex-start;
+}
+
+.date-cell {
+  color: var(--accent-700);
+  flex: 0 0 168px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Auto-plan results --------------------------------------------------- */
+
+.autoplan-row {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4) 0;
+}
+
+.autoplan-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.option-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: space-between;
+}
+
+.option-courses {
+  display: grid;
+  gap: var(--sp-2);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.option-courses div {
+  background: var(--surface-2);
+  border-radius: var(--r-control);
+  display: flex;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.option-courses > div > span {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+/* --- Quota readout ------------------------------------------------------- */
+
+.quota-summary {
+  display: grid;
+  gap: var(--sp-4);
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.quota-summary div {
+  border-left: 2px solid var(--accent-300);
+  display: grid;
+  gap: var(--sp-1);
+  padding-left: var(--sp-3);
+}
+
+.quota-summary > div > span {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
+.quota-summary strong {
+  font-size: var(--fs-lg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+/* --- Code / pre ---------------------------------------------------------- */
+
+.inline-json,
+.examples pre,
+.raw-panel pre {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-relaxed);
+  overflow: auto;
+  padding: var(--sp-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.examples {
+  align-content: start;
+}
+
+.examples details {
+  border-top: 1px solid var(--line);
+  padding: var(--sp-3) 0;
+}
+
+.examples details:first-of-type {
+  border-top: 0;
+}
+
+.examples summary,
+.advanced-api summary {
+  color: var(--ink);
+  cursor: pointer;
+  font-size: var(--fs-base);
+  font-weight: 620;
+}
+
+.examples pre {
+  margin-top: var(--sp-2);
+}
+
+.examples a {
+  font-size: var(--fs-sm);
+}
+
+/* --- Collapsible advanced panels ---------------------------------------- */
+
+/* Progressive disclosure: the common path stays on screen, the JSON knobs and
+   solver internals fold away. This is the single biggest readability win. */
+.constraint-panel,
+.disclosure {
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-3);
+}
+
+.constraint-panel > summary,
+.disclosure > summary {
+  align-items: center;
+  color: var(--ink-2);
+  cursor: pointer;
+  display: flex;
+  font-size: var(--fs-sm);
+  font-weight: 650;
+  gap: var(--sp-2);
+  list-style: none;
+  padding: var(--sp-2) 0;
+}
+
+.constraint-panel > summary::-webkit-details-marker,
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.constraint-panel > summary::before,
+.disclosure > summary::before {
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  content: "";
+  flex: 0 0 auto;
+  transition: transform var(--speed) ease;
+}
+
+.constraint-panel[open] > summary::before,
+.disclosure[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.constraint-panel > summary:hover,
+.disclosure > summary:hover {
+  color: var(--accent-700);
+}
+
+.disclosure-body,
+.constraint-grid {
+  display: grid;
+  gap: var(--sp-4);
+  padding-top: var(--sp-3);
+}
+
+.constraint-block {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.constraint-block > strong {
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+}
+
+/* --- Notices / diagnostics ---------------------------------------------- */
+
+.notice {
+  background: var(--warning-soft);
+  border-left: 3px solid var(--warning);
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  color: var(--warning);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.diagnostics {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  padding-top: var(--sp-3);
+}
+
+.diagnostics > summary {
+  align-items: center;
+  color: var(--ink-2);
+  cursor: pointer;
+  display: flex;
+  font-size: var(--fs-sm);
+  font-weight: 650;
+  gap: var(--sp-2);
+  list-style: none;
+  padding: var(--sp-1) 0;
+}
+
+.diagnostics > summary::-webkit-details-marker {
+  display: none;
+}
+
+.diagnostics > summary::before {
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  content: "";
+  flex: 0 0 auto;
+  transition: transform var(--speed) ease;
+}
+
+.diagnostics[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.diagnostics > summary:hover {
+  color: var(--accent-700);
+}
+
+/* One row per course: the count is the signal, the detail is optional. */
+.diagnostics-summary {
+  display: grid;
+  gap: var(--sp-2);
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+}
+
+.diagnostics-summary li {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+}
+
+.diagnostics-summary li > span {
+  color: var(--muted);
+}
+
+.diagnostics-detail {
+  border-top: 1px solid var(--line);
+  margin-top: var(--sp-3);
+}
+
+.diagnostics strong {
+  color: var(--ink);
+}
+
+.diagnostics p {
+  line-height: var(--lh-snug);
+  margin: var(--sp-2) 0 0;
+}
+
+.diagnostics-detail p:first-child {
+  margin-top: 0;
+}
+
+/* --- Detail pane internals ---------------------------------------------- */
+
+.detail-content {
+  min-height: 200px;
+}
+
+.detail-head,
+.result-summary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  justify-content: space-between;
+  padding-bottom: var(--sp-3);
+}
+
+.detail-head {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--sp-4);
+}
+
+.result-summary {
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.subheading {
+  font-size: var(--fs-md);
+  font-weight: 650;
+  margin: var(--sp-4) 0 var(--sp-2);
+}
+
+/* --- Result blocks ------------------------------------------------------- */
+
+.result-block {
+  display: grid;
+  gap: var(--sp-3);
+  min-height: 80px;
+  padding: var(--sp-4);
+}
+
+.result-block.compact {
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.result-block:empty {
+  display: none;
+}
+
+/* --- Empty / loading states --------------------------------------------- */
+
+/* A composed empty state: icon-free, but it says what to do next. */
+.empty,
+.loading {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: var(--fs-base);
+  gap: var(--sp-2);
+  line-height: var(--lh-snug);
+  padding: var(--sp-4) 0;
+}
+
+.loading::before {
+  animation: spin 0.7s linear infinite;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  content: "";
+  flex: 0 0 auto;
+  height: 13px;
+  width: 13px;
+}
+
+.compact-empty {
+  padding: var(--sp-2) 0;
+}
+
+.error-text {
+  color: var(--danger);
+}
+
+/* --- Pagination --------------------------------------------------------- */
+
+.page-nav {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  padding-top: var(--sp-2);
+}
+
+.page-nav:empty {
+  display: none;
+}
+
+/* --- Toolbar ------------------------------------------------------------- */
+
+.toolbar {
+  display: grid;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-4) var(--sp-5);
+}
+
+.toolbar-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+
+.action-field {
+  align-content: end;
+}
+
+/* --- Event form --------------------------------------------------------- */
+
+.event-form {
+  margin-bottom: var(--sp-5);
+}
+
+.event-filters {
+  margin-bottom: var(--sp-4);
+}
+
+/* --- Raw response dock -------------------------------------------------- */
+
+/* Demoted from a page-wide bar to a collapsed dock: it is a debug surface, not
+   part of the primary workflow. */
+.raw-panel {
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  margin-top: var(--sp-6);
+}
+
+.raw-panel > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  justify-content: space-between;
+  list-style: none;
+  margin: 0 auto;
+  max-width: var(--content-max);
+  padding: var(--sp-3) var(--sp-6);
+}
+
+.raw-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.raw-panel > summary:hover {
+  background: var(--surface-2);
+}
+
+.raw-panel-summary-text {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.raw-panel summary strong {
+  font-size: var(--fs-sm);
+  font-weight: 620;
+}
+
+.raw-panel summary small {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
+.raw-panel pre {
+  border-radius: 0;
+  border-width: 1px 0 0;
+  margin: 0 auto;
+  max-height: 340px;
+  max-width: var(--content-max);
+}
+
+/* --- Toasts -------------------------------------------------------------- */
+
+.toast-region {
+  bottom: var(--sp-4);
+  display: grid;
+  gap: var(--sp-2);
+  max-width: min(380px, calc(100vw - 32px));
+  position: fixed;
+  right: var(--sp-4);
+  z-index: 60;
+}
+
+.toast {
+  background: var(--ink);
+  border-radius: var(--r-control);
+  box-shadow: var(--shadow-md);
+  color: #fff;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.toast.error {
+  background: var(--danger);
+}
+
+/* --------------------------------------------------------------------------
+   7. STATES
+   -------------------------------------------------------------------------- */
+
+.status {
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-chip);
+  display: inline-flex;
+  font-size: var(--fs-meta);
+  font-weight: 620;
+  gap: var(--sp-2);
+  min-height: 26px;
+  padding: 0 var(--sp-3);
+  white-space: nowrap;
+}
+
+/* A dot plus a word: colour alone is not the signal. */
+.status::before {
+  background: currentColor;
+  border-radius: 50%;
+  content: "";
+  height: 6px;
+  width: 6px;
+}
+
+.status.online {
+  background: var(--success-soft);
+  border-color: var(--accent-300);
+  color: var(--accent-700);
+}
+
+.status.offline {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.status.error {
+  background: var(--danger-soft);
+  border-color: #f0b4ae;
+  color: var(--danger);
+}
+
+/* --------------------------------------------------------------------------
+   8. RESPONSIVE
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .split-view,
+  .planning-grid,
+  .tool-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  /* Navigation must stay on one line, so the wordmark gives up its subtitle
+     before the tabs are allowed to wrap. */
+  .brand-text small {
+    display: none;
+  }
+
+  .tabs {
+    order: 3;
+    flex-basis: 100%;
+    margin: 0 calc(var(--sp-4) * -1);
+  }
+
+  .connection {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .page,
+  .masthead-inner,
+  .raw-panel > summary {
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+  }
+
+  .page {
+    padding-bottom: var(--sp-8);
+    padding-top: var(--sp-4);
+  }
+
+  .panel,
+  .results-pane,
+  .detail-pane,
+  .form-section,
+  .result-block,
+  .toolbar {
+    padding: var(--sp-4);
+  }
+
+  .page-heading h1 {
+    font-size: var(--fs-xl);
+  }
+
+  /* Agenda rows stack their time above the title. */
+  .week-day {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .week-day-label {
+    align-items: baseline;
+    display: flex;
+    gap: var(--sp-2);
+  }
+
+  .agenda-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agenda-item small {
+    grid-column: 1;
+  }
+
+  .section-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .section-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .date-cell {
+    flex-basis: 120px;
+  }
+
+  .form-grid.two,
+  .form-grid.three,
+  .form-grid.four,
+  .form-grid.five {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   9. PRINT — students print timetables
+   -------------------------------------------------------------------------- */
+
+@media print {
+  .masthead,
+  .tabs,
+  .raw-panel,
+  .toast-region,
+  .shortcut,
+  .button,
+  .link-button {
+    display: none !important;
+  }
+
+  .tab-panel {
+    display: block !important;
+  }
+
+  .page {
+    max-width: none;
+    padding: 0;
+  }
+
+  .panel,
+  .form-section,
+  .result-block {
+    border-color: #999;
+    break-inside: avoid;
+  }
+}

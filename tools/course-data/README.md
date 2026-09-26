@@ -1,6 +1,6 @@
 # Course data tool
 
-Independent operator CLI for HKUST Class Schedule imports. It does not start Fastify or serve user requests. Run commands from this directory after `bun install`.
+An operator CLI for importing HKUST Class Schedule data. It is standalone: it does not start Fastify and it does not serve user requests. Run these commands from this directory after `bun install`.
 
 ```bash
 bun run fetch -- --term 2530 --subject COMP
@@ -12,11 +12,35 @@ MONGO_URI=mongodb://localhost:27018/template-api bun run refresh -- --term 2530
 MONGO_URI=mongodb://localhost:27018/template-api bun src/cli.ts rollback --term 2530 --batch <batch-id>
 ```
 
-`fetch` saves complete raw pages under ignored `data/raw/`. `normalize` produces `course-data-v1` in ignored `data/normalized/`. A subject-filtered fetch is partial and cannot initialize a term. An unfiltered fetch discovers every advertised subject and follows same-subject pagination to the end; missing or repeated pages cannot be normalized as complete.
+## The pipeline
 
-The public page does not reliably publish exact meeting date ranges, career, or section binding. The tool never infers dates or current-term status from a season or homepage selection. Every term with an active import batch is available for personal planning, including historical terms; the API marks a term current only when the operator sets `ACADEMIC_CURRENT_TERM_CODE`. Multi-component offerings without binding evidence expose `bundleAvailability: unverified_binding` and have no selectable bundle. Scheduled imports should be run by cron or a controlled job, not by an HTTP route. Set `MONGO_URI` to the same database as the API. Never commit raw responses, auth state, or full production exports.
+`fetch` writes complete raw pages under `data/raw/`, which is gitignored. `normalize` turns those into `course-data-v1` under `data/normalized/`, also gitignored.
 
-An operator can supply independently verified exact combinations to `normalize` or `refresh` using `--bindings`. Keep this file outside the repository and record where the matching was confirmed:
+There is one trap worth knowing before you run `fetch`: a fetch filtered by subject is a partial snapshot and **cannot initialize a term**. To create a term you need an unfiltered fetch, which discovers every advertised subject and follows same-subject pagination to the end. If a page comes back missing or duplicated, the result cannot be normalized as complete, and the tool will say so rather than quietly producing a half-populated term.
+
+Scheduled imports belong in cron or another controlled job. Do not put this behind an HTTP route, and point `MONGO_URI` at the same database the API reads.
+
+## What the source cannot tell you
+
+The public schedule page does not reliably publish exact meeting date ranges, and it does not state which class is associated with which. Treat those as unknowns, not as fields you forgot to map. The tool also does not record an academic-career field, and it does not infer whether a term is current from a season name or a homepage selection.
+
+That last point has a consequence worth stating: every term with an active import batch is available for personal planning, historical terms included. The API marks a term current only when an operator sets `ACADEMIC_CURRENT_TERM_CODE`, so importing a term never makes it current on its own.
+
+IDs are built from the term: an offering is `termCode:courseCode`, and a section appends the class number, as in `2530:COMP2611:12345`. The API serves at most the four most recent imported terms.
+
+## How bundles get built
+
+Component types have to line up before a bundle can be offered.
+
+When two component types share the same numeric group labels, the normalizer records a `derived-label` bundle and emits an `INFERRED_LABEL_BINDING` warning. That warning is the tool telling you it guessed at a relationship the source did not state.
+
+Lettered sections such as `T01A` and `T01B` are alternatives inside group `01`, so a bundle contains one of them together with `L01`. They are never both required. Component types must have exactly matching sets of group numbers. Any layout that stays ambiguous is left as `bundleAvailability: unverified_binding` with no selectable bundle, rather than being filled in with a guess.
+
+Seat data is capacity, enrolled, remaining, waitlisted, and reserve capacity. There is no open/closed flag, and the tool does not invent one.
+
+## Verified bindings
+
+When the source is ambiguous but you know the real answer, you can hand the tool independently verified combinations through `--bindings`. Keep that file outside the repository and record where the matching was confirmed:
 
 ```json
 {
@@ -29,8 +53,14 @@ An operator can supply independently verified exact combinations to `normalize` 
 }
 ```
 
-Every listed combination must contain exactly one section per component type and have no time conflict. A lecture may appear in multiple verified combinations. Omitted combinations remain unavailable; labels alone never authorize a bundle. The API includes the bundle's source and evidence for operator-verified records.
+Each listed combination must contain exactly one section per component type and must not contain a time conflict. A lecture is allowed to appear in more than one verified combination. Combinations you leave out stay unavailable; operator bindings take precedence over the label-derived path, and the API reports both the source and the evidence you recorded.
 
-Keep `--bindings` outside the repository. A later import without an entry for an offering carries its verified combinations forward only while all referenced section IDs, labels, component types, association and meetings remain unchanged. To withdraw prior verification, supply an entry for that offering with `"combinations": []` and nonempty evidence. Changed sections retire affected bundles; the import run records a warning. Bundle provenance is stored as `bindingSource` so it does not overwrite the upstream provider identity in `source`.
+A later import carries verified combinations forward only while the referenced section IDs, labels, component types, association, and meetings are all unchanged. To withdraw verification for an offering, supply an entry for it with `"combinations": []` and non-empty evidence. When sections change, the affected bundles are retired and the import run records a warning. Bundle provenance is stored as `bindingSource` so it does not overwrite the upstream provider identity kept in `source`.
 
-The loader validates input, retains previous batches, and atomically changes one term pointer under a fenced lease. A partial import copies untouched records forward. A complete import marks missing records retired. Large complete-scope drops require `--allow-destructive-reconciliation` after operator inspection. `rollback` switches the pointer and stored term metadata together; it does not roll back newer quota observations.
+## Loading and rollback
+
+The loader validates its input, keeps previous batches, and changes one term pointer atomically under a fenced lease, so a reader sees the old batch or the new one and never a half-written state.
+
+A partial import copies untouched records forward. A complete import marks records missing from the new batch as retired, and a large complete-scope drop needs `--allow-destructive-reconciliation` after you have inspected what would be lost. `rollback` switches the pointer and the stored term metadata together. It does not roll back newer quota observations, because those were observed after the batch you are reverting to.
+
+Never commit raw responses, authentication state, or full production exports.

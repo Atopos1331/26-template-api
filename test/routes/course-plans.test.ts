@@ -11,9 +11,9 @@ const alice = { authorization: "Bearer alice-dev-token" };
 const bob = { authorization: "Bearer bob-dev-token" };
 const termCode = "2530";
 const batch = "batch-1";
-const offeringId = `${ACADEMIC_SOURCE}:${termCode}:COMP2611:UNKNOWN`;
+const offeringId = `${termCode}:COMP2611`;
 const bundleId = `${offeringId}:12345`;
-const offering2 = `${ACADEMIC_SOURCE}:${termCode}:COMP2612:UNKNOWN`;
+const offering2 = `${termCode}:COMP2612`;
 const bundle2 = `${offering2}:12346`;
 let mongod: MongoMemoryServer;
 
@@ -75,12 +75,11 @@ async function seed(db: Db) {
     },
   ]);
   await db.collection("courseOfferings").insertMany([
-    { ...key, offeringId, courseId: "COMP2611", academicCareer: "UNKNOWN" },
+    { ...key, offeringId, courseId: "COMP2611" },
     {
       ...key,
       offeringId: offering2,
       courseId: "COMP2612",
-      academicCareer: "UNKNOWN",
     },
   ]);
   await db.collection("classSections").insertMany([
@@ -207,6 +206,46 @@ test("course plans support owner-scoped CAS item mutations", async () => {
     const listed = await app.inject({ url: "/plans", headers: alice });
     expect(listed.statusCode).toBe(200);
     expect(listed.json().items[0].itemCount).toBe(1);
+  } finally {
+    await app.close();
+  }
+});
+
+test("plan cursors are bound to their list filters", async () => {
+  const app = await buildApp();
+  try {
+    await seed(app.mongo.db!);
+    for (const name of ["First", "Second"]) {
+      const created = await app.inject({
+        method: "POST",
+        url: "/plans",
+        headers: alice,
+        payload: { name, termCode },
+      });
+      expect(created.statusCode).toBe(201);
+    }
+    const first = await app.inject({
+      url: `/plans?termCode=${termCode}&limit=1`,
+      headers: alice,
+    });
+    expect(first.statusCode).toBe(200);
+    const cursor = first.json().page.nextCursor as string;
+    expect(cursor).toBeTruthy();
+
+    const next = await app.inject({
+      url: `/plans?termCode=${termCode}&limit=1&cursor=${cursor}`,
+      headers: alice,
+    });
+    expect(next.statusCode).toBe(200);
+    expect(next.json().items).toHaveLength(1);
+    for (const url of [
+      `/plans?limit=1&cursor=${cursor}`,
+      `/plans?termCode=${termCode}&status=draft&cursor=${cursor}`,
+    ]) {
+      const reused = await app.inject({ url, headers: alice });
+      expect(reused.statusCode).toBe(400);
+      expect(reused.json().error.code).toBe("invalid_cursor");
+    }
   } finally {
     await app.close();
   }
@@ -458,6 +497,177 @@ test("auto-plan generation is read-only and apply is signed, conditional, and re
   }
 });
 
+test("auto-plan options stay distinct when the result limit exceeds available bundles", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    const otherBundleId = `${offeringId}:12347`;
+    const key = {
+      source: ACADEMIC_SOURCE,
+      termCode,
+      importBatchId: batch,
+      retiredAt: null,
+    };
+    await db.collection("classSections").insertOne({
+      ...key,
+      sectionId: `${offeringId}:12347`,
+      offeringId,
+      classNbr: "12347",
+      sectionCode: "L2",
+      meetings: [],
+      componentType: "LEC",
+    });
+    await db.collection("sectionBundles").insertOne({
+      ...key,
+      bundleId: otherBundleId,
+      offeringId,
+      leadClassNbr: "12347",
+      componentClassNbrs: ["12347"],
+      componentTypes: ["LEC"],
+      sectionLabels: ["L2"],
+      derivedSchedule: { meetings: [] },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/plans",
+      headers: alice,
+      payload: { name: "Two sections", termCode },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const generated = await app.inject({
+      method: "POST",
+      url: `/plans/${created.json().data.id}/auto-plans`,
+      headers: alice,
+      payload: {
+        courses: [{ courseCode: "COMP2611", required: true }],
+        resultLimit: 3,
+      },
+    });
+    expect(generated.statusCode).toBe(200);
+    expect(generated.json().data.searchStatus).toBe("completed");
+    expect(
+      generated
+        .json()
+        .data.options.map(
+          (option: { selectedBundleIds: string[] }) =>
+            option.selectedBundleIds[0],
+        )
+        .sort(),
+    ).toEqual([bundleId, otherBundleId].sort());
+  } finally {
+    await app.close();
+  }
+});
+
+test("auto-plan filler checks every offering for a course", async () => {
+  const app = await buildApp();
+  try {
+    const db = app.mongo.db!;
+    await seed(db);
+    await db.collection("courseOfferings").insertOne({
+      source: ACADEMIC_SOURCE,
+      termCode,
+      importBatchId: batch,
+      retiredAt: null,
+      offeringId: `${termCode}:COMP2612A`,
+      courseId: "COMP2612",
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/plans",
+      headers: alice,
+      payload: { name: "Filler offerings", termCode },
+    });
+    const generated = await app.inject({
+      method: "POST",
+      url: `/plans/${created.json().data.id}/auto-plans`,
+      headers: alice,
+      payload: {
+        courses: [{ courseCode: "COMP2611", required: true }],
+        fill: { maxCourses: 1, courseCodes: ["COMP2612"] },
+      },
+    });
+    expect(generated.statusCode).toBe(200);
+    expect(generated.json().data.options[0].fillers).toHaveLength(1);
+    expect(generated.json().data.options[0].fillers[0].bundleId).toBe(bundle2);
+    const duplicate = await app.inject({
+      method: "POST",
+      url: `/plans/${created.json().data.id}/auto-plans`,
+      headers: alice,
+      payload: {
+        courses: [{ courseCode: "COMP2611", required: true }],
+        fill: { maxCourses: 1, courseCodes: ["COMP2611"] },
+      },
+    });
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json().data.options[0].fillers).toHaveLength(0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("auto-plan ignores conflicts between unrelated calendar events", async () => {
+  const app = await buildApp();
+  try {
+    await seed(app.mongo.db!);
+    await seedConflictingMeetings(app.mongo.db!);
+    for (const [title, startsAt, endsAt] of [
+      ["First meeting", "2026-10-06T04:00:00Z", "2026-10-06T05:00:00Z"],
+      ["Second meeting", "2026-10-06T04:30:00Z", "2026-10-06T05:30:00Z"],
+    ]) {
+      const createdEvent = await app.inject({
+        method: "POST",
+        url: "/events",
+        headers: alice,
+        payload: { title, startsAt, endsAt },
+      });
+      expect(createdEvent.statusCode).toBe(201);
+    }
+    const created = await app.inject({
+      method: "POST",
+      url: "/plans",
+      headers: alice,
+      payload: { name: "Unrelated meetings", termCode },
+    });
+    const url = `/plans/${created.json().data.id}/auto-plans`;
+    const request = {
+      courses: [{ courseCode: "COMP2611", required: true }],
+    };
+    const generated = await app.inject({
+      method: "POST",
+      url,
+      headers: alice,
+      payload: request,
+    });
+    expect(generated.statusCode).toBe(200);
+    expect(generated.json().data.options).toHaveLength(1);
+
+    const blockingEvent = await app.inject({
+      method: "POST",
+      url: "/events",
+      headers: alice,
+      payload: {
+        title: "Actual class conflict",
+        startsAt: "2026-10-06T02:00:00Z",
+        endsAt: "2026-10-06T03:00:00Z",
+      },
+    });
+    expect(blockingEvent.statusCode).toBe(201);
+    const blocked = await app.inject({
+      method: "POST",
+      url,
+      headers: alice,
+      payload: request,
+    });
+    expect(blocked.statusCode).toBe(200);
+    expect(blocked.json().data.options).toHaveLength(0);
+  } finally {
+    await app.close();
+  }
+});
+
 test("apply rechecks conflicts between selected bundles", async () => {
   const app = await buildApp();
   try {
@@ -638,7 +848,6 @@ test("zero remaining without capacity is unknown quota, not a full section", asy
       snapshotId: "quota-unknown-capacity",
       remaining: 0,
       capacity: null,
-      open: true,
     });
     const created = await app.inject({
       method: "POST",
@@ -674,6 +883,58 @@ test("zero remaining without capacity is unknown quota, not a full section", asy
     expect(allowed.json().data.options).toHaveLength(1);
     expect(allowed.json().data.options[0].quotaBottlenecks[0].unknown).toBe(
       true,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("known capacity and zero remaining rejects a full section", async () => {
+  const app = await buildApp();
+  try {
+    await seed(app.mongo.db!);
+    await app.mongo.db!.collection("latestQuotas").insertOne({
+      source: ACADEMIC_SOURCE,
+      sectionId: `${offeringId}:12345`,
+      snapshotId: "quota-full-known-capacity",
+      capacity: 10,
+      enrolled: 10,
+      remaining: 0,
+      observedAt: "2026-09-23T10:00:00.000Z",
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/plans",
+      headers: alice,
+      payload: { name: "Full section", termCode },
+    });
+    const id = created.json().data.id;
+    const excluded = await app.inject({
+      method: "POST",
+      url: `/plans/${id}/auto-plans`,
+      headers: alice,
+      payload: { courses: [{ courseCode: "COMP2611", required: true }] },
+    });
+    expect(excluded.statusCode).toBe(200);
+    expect(excluded.json().data.searchStatus).toBe("infeasible");
+
+    const allowed = await app.inject({
+      method: "POST",
+      url: `/plans/${id}/auto-plans`,
+      headers: alice,
+      payload: {
+        allowFullWaitlist: true,
+        unknownQuotaPolicy: "exclude",
+        courses: [{ courseCode: "COMP2611", required: true }],
+      },
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json().data.options).toHaveLength(1);
+    expect(allowed.json().data.options[0].quotaBottlenecks[0].remaining).toBe(
+      0,
+    );
+    expect(allowed.json().data.options[0].quotaBottlenecks[0].unknown).toBe(
+      false,
     );
   } finally {
     await app.close();

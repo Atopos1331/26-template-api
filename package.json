@@ -9,8 +9,9 @@
     "test": "test"
   },
   "scripts": {
-    "dev": "bun --bun fastify start --watch --log-level=debug --pretty-logs --options src/app.ts",
-    "start": "bun --bun fastify start --log-level=info --options src/app.ts",
+    "dev": "bun --bun fastify start --watch --address 0.0.0.0 --log-level=debug --pretty-logs --options src/app.ts",
+    "start": "bun --bun fastify start --address 0.0.0.0 --log-level=info --options src/app.ts",
+    "frontend": "bun frontend/server.ts",
     "worker:academic-refresh": "bun src/workers/academic-refresh-cli.ts",
     "worker:ics-import-recovery": "bun src/workers/ics-import-recovery-cli.ts",
     "test": "bun test --coverage --timeout=60000 test",
